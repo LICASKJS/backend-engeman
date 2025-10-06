@@ -1,0 +1,11 @@
+Flask
+Flask-SQLAlchemy
+Flask-JWT-Extended
+Flask-Mail
+Flask-Migrate
+Flask-Cors
+gunicorn
+pandas
+openpyxl
+psycopg2-binary
+python-dotenv

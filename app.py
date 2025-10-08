@@ -486,7 +486,7 @@ def documentos_necessarios():
         categoria = data.get('categoria')
         if not categoria:
             return jsonify(message="Categoria não fornecida"), 400
-        claf_path = os.path.abspath(os.path.join(app.root_path, '..', 'static', 'claf.xlsx'))
+        claf_path = os.path.abspath(os.path.join(app.root_path, '..', 'uploads', 'CLAF.xlsx'))
         if not os.path.exists(claf_path):
             return jsonify(message="Planilha CLAF não encontrada"), 500
         df = pd.read_excel(claf_path, header=0)
@@ -515,10 +515,10 @@ def consultar_dados_homologacao():
             return jsonify(message="Parâmetro 'fornecedor_nome' é obrigatório."), 400
         
         path_homologados = os.path.abspath(
-            os.path.join(app.root_path, '..', 'static', 'fornecedores_homologados.xlsx')
+            os.path.join(app.root_path, '..', 'uploads', 'fornecedores_homologados.xlsx')
         )
         path_controle = os.path.abspath(
-            os.path.join(app.root_path, '..', 'static', 'atendimento controle_qualidade.xlsx')
+            os.path.join(app.root_path, '..', 'uploads', 'atendimento controle_qualidade.xlsx')
         )
         print(f"Caminho do arquivo de homologados: {path_homologados}")
 

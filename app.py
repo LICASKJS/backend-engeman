@@ -31,8 +31,7 @@ ADMIN_ALLOWED_EMAILS = {
 }
 
 ADMIN_PASSWORD = 'admin123'
-CORS(app, resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000"]}})
-
+CORS(app, resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000", "https://portalengeman-front.vercel.app"]}})
 app.config.from_object(Config)
 db.init_app(app)
 
@@ -42,6 +41,8 @@ migrate = Migrate(app, db)
 
 with app.app_context():
     db.create_all()
+
+    
 @app.route('/')
 def home():
     return "Bem-vindo ao Portal de Fornecedores!"
@@ -900,7 +901,7 @@ def painel_admin_notificacoes():
         print(f'Erro ao obter notificações admin: {exc}')
         return jsonify(message='Erro ao listar notificações'), 500
     
-    
+
 @app.route('/api/fornecedores', methods=['GET'])
 def listar_fornecedores():
     nome = request.args.get('nome', '')

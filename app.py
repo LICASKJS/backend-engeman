@@ -94,6 +94,7 @@ def login():
         app.logger.error(f"Erro no login: {str(e)}")
         return jsonify(message="Erro ao autenticar, tente novamente mais tarde."), 500
     
+    
 @app.route('/api/recuperar-senha', methods=['POST'])
 def recuperar_senha():
     try:
@@ -476,6 +477,8 @@ def enviar_documento():
     except Exception as e:
         return jsonify(message="Erro ao enviar documentos: " + str(e)), 500
     
+
+    
 @app.route('/api/documentos-necessarios', methods=['POST'])
 
 def documentos_necessarios():
@@ -486,7 +489,7 @@ def documentos_necessarios():
         categoria = data.get('categoria')
         if not categoria:
             return jsonify(message="Categoria não fornecida"), 400
-        claf_path = os.path.abspath(os.path.join(app.root_path, '..', 'uploads', 'CLAF.xlsx'))
+        claf_path = '/opt/render/project/uploads/CLAF.xlsx'
         if not os.path.exists(claf_path):
             return jsonify(message="Planilha CLAF não encontrada"), 500
         df = pd.read_excel(claf_path, header=0)
@@ -637,12 +640,8 @@ def _normalize_text(value):
     return ' '.join(normalized.split())
 
 def _carregar_planilhas_homologacao():
-    path_homologados = os.path.abspath(
-        os.path.join(app.root_path, '..', 'static', 'fornecedores_homologados.xlsx')
-    )
-    path_controle = os.path.abspath(
-        os.path.join(app.root_path, '..', 'static', 'atendimento controle_qualidade.xlsx')
-    )
+    path_homologados = '/opt/render/project/uploads/fornecedores_homologados.xlsx'
+    path_controle = '/opt/render/project/uploads/atendimento controle_qualidade.xlsx'
     if not os.path.exists(path_homologados) or not os.path.exists(path_controle):
         raise FileNotFoundError('Planilhas necessárias não foram encontradas')
     df_homologados = pd.read_excel(path_homologados)
@@ -654,6 +653,7 @@ def _carregar_planilhas_homologacao():
         df_controle.columns.str.strip().str.lower().str.replace(' ', '_')
     )
     return df_homologados, df_controle
+
 def _to_float(value):
     try:
         if value in (None, '', 'nan'):
@@ -661,6 +661,7 @@ def _to_float(value):
         return float(value)
     except (TypeError, ValueError):
         return None
+    
 def _calcular_media_iqf_controle(fornecedor_nome_planilha, fornecedor_nome_busca, df_controle):
     if df_controle is None or df_controle.empty:
         return None, 0, []
@@ -769,6 +770,7 @@ def _montar_registro_admin(fornecedor, df_homologados, df_controle):
         'ultima_atividade': ultima_atividade.isoformat() if ultima_atividade else None,
         'data_cadastro': fornecedor.data_cadastro.isoformat() if fornecedor.data_cadastro else None
     }
+
 def _admin_usuario_autorizado():
     identidade = get_jwt_identity()
     claims = get_jwt()
@@ -854,6 +856,8 @@ def painel_admin_fornecedores():
     except Exception as exc:
         print(f'Erro ao listar fornecedores admin: {exc}')
         return jsonify(message='Erro ao listar fornecedores'), 500
+    
+
 @app.route('/api/admin/notificacoes', methods=['GET'])
 @jwt_required()
 def painel_admin_notificacoes():
@@ -1200,6 +1204,7 @@ def enviar_email_documento(fornecedor_nome, documento_nome, categoria, destinata
     except Exception as e:
         print(f"Erro ao enviar e-mail para {destinatario}: {e}")
         return None
+    
 def enviar_email(destinatario, assunto, corpo, imagem_path):
     try:
         msg = Message(assunto, recipients=[destinatario], html=corpo)
@@ -1212,6 +1217,7 @@ def enviar_email(destinatario, assunto, corpo, imagem_path):
     except Exception as e:
         print(f"Erro ao enviar e-mail: {e}")
         raise e
+    
 def gerar_token_recuperacao():
     return random.randint(100000, 999999)
 if __name__ == '__main__':

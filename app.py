@@ -489,7 +489,7 @@ def documentos_necessarios():
         categoria = data.get('categoria')
         if not categoria:
             return jsonify(message="Categoria não fornecida"), 400
-        claf_path = '/opt/render/project/uploads/CLAF.xlsx'
+        claf_path = os.path.abspath(os.path.join(app.root_path, '..', 'static', 'CLAF.xlsx'))
         if not os.path.exists(claf_path):
             return jsonify(message="Planilha CLAF não encontrada"), 500
         df = pd.read_excel(claf_path, header=0)
@@ -517,12 +517,10 @@ def consultar_dados_homologacao():
 
             return jsonify(message="Parâmetro 'fornecedor_nome' é obrigatório."), 400
         
-        path_homologados = os.path.abspath(
-            os.path.join(app.root_path, '..', 'uploads', 'fornecedores_homologados.xlsx')
-        )
-        path_controle = os.path.abspath(
-            os.path.join(app.root_path, '..', 'uploads', 'atendimento controle_qualidade.xlsx')
-        )
+        path_homologados = os.path.abspath(os.path.join(app.root_path, '..', 'static', 'fornecedores_homologados.xlsx'))
+
+        path_controle = os.path.abspath(os.path.join(app.root_path, '..', 'static', 'atendimento_controle_qualidade.xlsx'))
+
         print(f"Caminho do arquivo de homologados: {path_homologados}")
 
         print(f"Caminho do arquivo de controle de qualidade: {path_controle}")
@@ -640,8 +638,8 @@ def _normalize_text(value):
     return ' '.join(normalized.split())
 
 def _carregar_planilhas_homologacao():
-    path_homologados = '/opt/render/project/uploads/fornecedores_homologados.xlsx'
-    path_controle = '/opt/render/project/uploads/atendimento controle_qualidade.xlsx'
+    path_homologados = os.path.abspath(os.path.join(app.root_path, '..', 'static', 'fornecedores_homologados.xlsx'))
+    path_controle = os.path.abspath(os.path.join(app.root_path, '..', 'static', 'atendimento_controle_qualidade.xlsx'))
     if not os.path.exists(path_homologados) or not os.path.exists(path_controle):
         raise FileNotFoundError('Planilhas necessárias não foram encontradas')
     df_homologados = pd.read_excel(path_homologados)

@@ -30,6 +30,10 @@ ADMIN_ALLOWED_EMAILS = {
     'lucas.mateus@engeman.net'
 }
 
+CORS(app)
+
+CORS(app, resources={r"/*": {"origins": "https://portalengeman-front-9uct.vercel.app"}})
+
 ADMIN_PASSWORD = 'admin123'
 CORS(app, resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000", "https://portalengeman-front.vercel.app"]}})
 app.config.from_object(Config)
@@ -519,7 +523,7 @@ def consultar_dados_homologacao():
         
         path_homologados = os.path.abspath(os.path.join(app.root_path, '..', 'static', 'fornecedores_homologados.xlsx'))
 
-        path_controle = os.path.abspath(os.path.join(app.root_path, '..', 'static', 'atendimento_controle_qualidade.xlsx'))
+        path_controle = os.path.abspath(os.path.join(app.root_path, '..', 'static', 'atendimento controle_qualidade.xlsx'))
 
         print(f"Caminho do arquivo de homologados: {path_homologados}")
 
@@ -639,7 +643,7 @@ def _normalize_text(value):
 
 def _carregar_planilhas_homologacao():
     path_homologados = os.path.abspath(os.path.join(app.root_path, '..', 'static', 'fornecedores_homologados.xlsx'))
-    path_controle = os.path.abspath(os.path.join(app.root_path, '..', 'static', 'atendimento_controle_qualidade.xlsx'))
+    path_controle = os.path.abspath(os.path.join(app.root_path, '..', 'static', 'atendimento controle_qualidade.xlsx'))
     if not os.path.exists(path_homologados) or not os.path.exists(path_controle):
         raise FileNotFoundError('Planilhas necessárias não foram encontradas')
     df_homologados = pd.read_excel(path_homologados)
@@ -798,9 +802,13 @@ def admin_login():
         return jsonify(message='Erro ao autenticar administrador'), 500
     
 @app.route('/api/admin/dashboard', methods=['GET'])
+
 @jwt_required()
+
 def painel_admin_dashboard():
+
     if not _admin_usuario_autorizado():
+
         return jsonify(message='Acesso nao autorizado.'), 403
     try:
         fornecedores_db = Fornecedor.query.all()
@@ -811,6 +819,7 @@ def painel_admin_dashboard():
         for fornecedor in fornecedores_db:
             info = _montar_registro_admin(fornecedor, df_homologados, df_controle)
             status_counts[info['status']] = status_counts.get(info['status'], 0) + 1
+
         return jsonify(
             total_cadastrados=total_cadastrados,
             total_aprovados=status_counts.get('APROVADO', 0),
@@ -818,8 +827,10 @@ def painel_admin_dashboard():
             total_reprovados=status_counts.get('REPROVADO', 0),
             total_documentos=total_documentos
         ), 200
+    
     except FileNotFoundError as e:
         return jsonify(message=str(e)), 500
+    
     except Exception as exc:
         print(f'Erro no dashboard admin: {exc}')
         return jsonify(message='Erro ao gerar dashboard administrativo'), 500
@@ -857,9 +868,13 @@ def painel_admin_fornecedores():
     
 
 @app.route('/api/admin/notificacoes', methods=['GET'])
+
 @jwt_required()
+
 def painel_admin_notificacoes():
+
     if not _admin_usuario_autorizado():
+
         return jsonify(message='Acesso não autorizado.'), 403
     try:
         limite = request.args.get('limit', 20, type=int)
@@ -879,6 +894,7 @@ def painel_admin_notificacoes():
                     'cnpj': fornecedor.cnpj
                 }
             })
+
         documentos = Documento.query.order_by(Documento.data_upload.desc()).limit(limite).all()
         for doc in documentos:
             fornecedor = doc.fornecedor
@@ -899,14 +915,18 @@ def painel_admin_notificacoes():
         eventos.sort(key=lambda item: item['timestamp'], reverse=True)
         eventos = eventos[:limite]
         return jsonify(eventos), 200
+    
     except Exception as exc:
         print(f'Erro ao obter notificações admin: {exc}')
         return jsonify(message='Erro ao listar notificações'), 500
     
 
 @app.route('/api/fornecedores', methods=['GET'])
+
 def listar_fornecedores():
+
     nome = request.args.get('nome', '')
+
     print(f"Buscando fornecedores com nome: {nome}")
     if nome:
         fornecedores = Fornecedor.query.filter(Fornecedor.nome.ilike(f'%{nome}%')).all()
@@ -915,6 +935,7 @@ def listar_fornecedores():
     print(f"Fornecedores encontrados: {len(fornecedores)}")
     lista = [{"id": f.id, "nome": f.nome, "email": f.email, "cnpj": f.cnpj} for f in fornecedores]
     return jsonify(lista)
+
 def enviar_email_documento(fornecedor_nome, documento_nome, categoria, destinatario, link_documento, arquivos_paths=None):
     corpo = f"""
     <!DOCTYPE html>
@@ -1198,7 +1219,9 @@ def enviar_email_documento(fornecedor_nome, documento_nome, categoria, destinata
                 with app.open_resource(arquivo_path) as fp:
                     msg.attach(arquivo_path, "application/octet-stream", fp.read())
         mail.send(msg)
+
         print(f'E-mail enviado para {destinatario}')
+
     except Exception as e:
         print(f"Erro ao enviar e-mail para {destinatario}: {e}")
         return None
@@ -1206,12 +1229,14 @@ def enviar_email_documento(fornecedor_nome, documento_nome, categoria, destinata
 def enviar_email(destinatario, assunto, corpo, imagem_path):
     try:
         msg = Message(assunto, recipients=[destinatario], html=corpo)
+        
         with open(imagem_path, "rb") as img:
             img_data = img.read()
             encoded_img = base64.b64encode(img_data).decode('utf-8')
         corpo_com_imagem = corpo.replace("cid:engeman_logo", f"data:image/png;base64,{encoded_img}")
         msg.html = corpo_com_imagem
         mail.send(msg)
+
     except Exception as e:
         print(f"Erro ao enviar e-mail: {e}")
         raise e

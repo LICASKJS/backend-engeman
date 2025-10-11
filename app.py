@@ -31,7 +31,18 @@ ADMIN_ALLOWED_EMAILS = {
 }
 
 ADMIN_PASSWORD = 'admin123'
-CORS(app, resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000"]}})
+CORS(
+    app,
+    resources={
+        r"/api/*": {
+            "origins": [
+                "http://localhost:3000",
+                "http://127.0.0.1:3000",
+                "https://portalengeman-front.vercel.app",
+            ]
+        }
+    },
+)
 
 app.config.from_object(Config)
 db.init_app(app)

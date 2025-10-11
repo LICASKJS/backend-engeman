@@ -31,6 +31,52 @@ ADMIN_ALLOWED_EMAILS = {
 }
 
 ADMIN_PASSWORD = 'admin123'
+
+
+def _build_static_search_paths():
+    """
+    Monta uma lista de diretórios possíveis onde os arquivos estáticos podem estar.
+    Inclui caminhos relativos ao app, ao repositório raiz e também diretórios definidos via variável de ambiente.
+    """
+    candidate_dirs = [
+        app.static_folder,
+        os.path.join(app.root_path, 'static'),
+        os.path.join(os.path.dirname(app.root_path), 'static'),
+        os.path.join(os.getcwd(), 'static'),
+        os.environ.get('STATICFILES_DIR'),
+        os.environ.get('STATIC_ROOT'),
+        os.environ.get('STATIC_DIR'),
+    ]
+
+    seen = set()
+    normalized = []
+    for raw_path in candidate_dirs:
+        if not raw_path:
+            continue
+        abs_path = os.path.abspath(raw_path)
+        if abs_path in seen:
+            continue
+        seen.add(abs_path)
+        normalized.append(abs_path)
+    return normalized
+
+
+STATIC_SEARCH_PATHS = _build_static_search_paths()
+
+
+def _resolve_static_file(*possible_names):
+    """
+    Procura pelo primeiro arquivo existente entre os nomes informados dentro da lista de diretórios monitorados.
+    Retorna o caminho absoluto caso encontre; caso contrário, retorna None.
+    """
+    for base_dir in STATIC_SEARCH_PATHS:
+        for name in possible_names:
+            if not name:
+                continue
+            candidate = os.path.abspath(os.path.join(base_dir, name))
+            if os.path.exists(candidate):
+                return candidate
+    return None
 CORS(
     app,
     resources={
@@ -167,7 +213,7 @@ def recuperar_senha():
         </body>
         </html>
         """
-        imagem_path = os.path.join(os.path.dirname(app.root_path), 'static', 'colorida.png')
+        imagem_path = _resolve_static_file('colorida.png')
         email_enviado = enviar_email(fornecedor.email, "Recuperação de Senha", corpo_email, imagem_path)
         if not email_enviado:
             return jsonify(
@@ -426,7 +472,7 @@ def contato():
 
 """
 
-        imagem_path = os.path.join(os.path.dirname(app.root_path), 'static', 'colorida.png')
+        imagem_path = _resolve_static_file('colorida.png')
         email_enviado = enviar_email(
             destinatario="lucas.mateus@engeman.net",
             assunto=f"MENSAGEM DO PORTAL: {assunto}",
@@ -503,16 +549,15 @@ def documentos_necessarios():
         categoria = data.get('categoria')
         if not categoria:
             return jsonify(message="Categoria não fornecida"), 400
-        static_dir = os.path.abspath(os.path.join(app.root_path, '..', 'static'))
-        candidatos_arquivo = ['CLAF.xlsx', 'claf.xlsx']
-        claf_path = None
-        for candidato in candidatos_arquivo:
-            candidato_path = os.path.join(static_dir, candidato)
-            if os.path.exists(candidato_path):
-                claf_path = candidato_path
-                break
+        candidatos_arquivo = ('CLAF.xlsx', 'claf.xlsx')
+        claf_path = _resolve_static_file(*candidatos_arquivo)
         if not claf_path:
-            return jsonify(message="Planilha CLAF não encontrada no diretório static"), 500
+            diretorios = ", ".join(STATIC_SEARCH_PATHS)
+            app.logger.error("Planilha CLAF não encontrada. Diretórios verificados: %s", diretorios)
+            return jsonify(
+                message="Planilha CLAF não encontrada nos diretórios configurados.",
+                diretorios_verificados=STATIC_SEARCH_PATHS
+            ), 500
         df = pd.read_excel(claf_path, header=0)
         df.columns = df.columns.str.strip().str.replace('\n', '').str.replace('\r', '')
         if 'MATERIAL' not in df.columns:
@@ -543,17 +588,25 @@ def consultar_dados_homologacao():
         print(f"Buscando dados para o fornecedor com nome: {fornecedor_nome} e ID: {fornecedor_id_param}")
         if not fornecedor_nome:
             return jsonify(message="Parâmetro 'fornecedor_nome' ou 'fornecedor_id' é obrigatório."), 400
-        path_homologados = os.path.abspath(
-            os.path.join(app.root_path, '..', 'static', 'fornecedores_homologados.xlsx')
-        )
-        path_controle = os.path.abspath(
-            os.path.join(app.root_path, '..', 'static', 'atendimento controle_qualidade.xlsx')
-        )
+        path_homologados = _resolve_static_file('fornecedores_homologados.xlsx')
+        path_controle = _resolve_static_file('atendimento controle_qualidade.xlsx', 'atendimento_controle_qualidade.xlsx')
         print(f"Caminho do arquivo de homologados: {path_homologados}")
         print(f"Caminho do arquivo de controle de qualidade: {path_controle}")
-        if not os.path.exists(path_homologados) or not os.path.exists(path_controle):
+        if not path_homologados or not path_controle:
+            faltantes = []
+            if not path_homologados:
+                faltantes.append('fornecedores_homologados.xlsx')
+            if not path_controle:
+                faltantes.append('atendimento controle_qualidade.xlsx')
+            app.logger.error(
+                "Planilhas %s não foram localizadas. Diretórios verificados: %s",
+                ", ".join(faltantes),
+                ", ".join(STATIC_SEARCH_PATHS),
+            )
             return jsonify(
-                message="Um ou mais arquivos de planilha não foram encontrados. Verifique os caminhos dos arquivos."
+                message="Um ou mais arquivos de planilha não foram encontrados. Verifique os caminhos dos arquivos.",
+                arquivos_ausentes=faltantes,
+                diretorios_verificados=STATIC_SEARCH_PATHS
             ), 500
         df_homologacao = pd.read_excel(path_homologados)
         df_controle_qualidade = pd.read_excel(path_controle)
@@ -691,16 +744,13 @@ def _normalize_text(value):
 
 
 def _carregar_planilhas_homologacao():
-    path_homologados = os.path.abspath(
-        os.path.join(app.root_path, '..', 'static', 'fornecedores_homologados.xlsx')
-    )
-    path_controle = os.path.abspath(
-        os.path.join(app.root_path, '..', 'static', 'atendimento controle_qualidade.xlsx')
-    )
+    path_homologados = _resolve_static_file('fornecedores_homologados.xlsx')
+    path_controle = _resolve_static_file('atendimento controle_qualidade.xlsx', 'atendimento_controle_qualidade.xlsx')
 
-    if not os.path.exists(path_homologados) or not os.path.exists(path_controle):
-
-        raise FileNotFoundError('Planilhas necessárias não foram encontradas')
+    if not path_homologados or not path_controle:
+        raise FileNotFoundError(
+            f"Planilhas necessárias não foram encontradas. Diretórios verificados: {STATIC_SEARCH_PATHS}"
+        )
     
     df_homologados = pd.read_excel(path_homologados)
 
@@ -1288,11 +1338,18 @@ def enviar_email_documento(fornecedor_nome, documento_nome, categoria, destinata
 def enviar_email(destinatario, assunto, corpo, imagem_path):
     try:
         msg = Message(assunto, recipients=[destinatario], html=corpo)
-        with open(imagem_path, "rb") as img:
-            img_data = img.read()
-            encoded_img = base64.b64encode(img_data).decode('utf-8')
-        corpo_com_imagem = corpo.replace("cid:engeman_logo", f"data:image/png;base64,{encoded_img}")
-        msg.html = corpo_com_imagem
+        corpo_formatado = corpo
+        if imagem_path and os.path.exists(imagem_path):
+            with open(imagem_path, "rb") as img:
+                img_data = img.read()
+                encoded_img = base64.b64encode(img_data).decode('utf-8')
+            corpo_formatado = corpo.replace("cid:engeman_logo", f"data:image/png;base64,{encoded_img}")
+        else:
+            app.logger.warning(
+                "Imagem de e-mail não encontrada em %s. Enviando mensagem sem embed.",
+                imagem_path or "<desconhecido>",
+            )
+        msg.html = corpo_formatado
         mail.send(msg)
         return True
     except Exception as e:

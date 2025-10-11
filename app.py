@@ -30,12 +30,9 @@ ADMIN_ALLOWED_EMAILS = {
     'lucas.mateus@engeman.net'
 }
 
-CORS(app)
-
-CORS(app, resources={r"/*": {"origins": "https://portalengeman-front-9uct.vercel.app"}})
-
 ADMIN_PASSWORD = 'admin123'
-CORS(app, resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000", "https://portalengeman-front.vercel.app"]}})
+CORS(app, resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000"]}})
+
 app.config.from_object(Config)
 db.init_app(app)
 
@@ -45,13 +42,9 @@ migrate = Migrate(app, db)
 
 with app.app_context():
     db.create_all()
-
-    
 @app.route('/')
 def home():
     return "Bem-vindo ao Portal de Fornecedores!"
-
-
 @app.route('/api/cadastro', methods=['POST'])
 def cadastrar_fornecedor():
     try:
@@ -72,7 +65,6 @@ def cadastrar_fornecedor():
     except Exception as e:
         print(str(e))
         return jsonify(message="Erro ao cadastrar fornecedor: " + str(e)), 500
-    
 @app.route('/api/login', methods=['POST'])
 def login():
     try:
@@ -97,8 +89,6 @@ def login():
     except Exception as e:
         app.logger.error(f"Erro no login: {str(e)}")
         return jsonify(message="Erro ao autenticar, tente novamente mais tarde."), 500
-    
-    
 @app.route('/api/recuperar-senha', methods=['POST'])
 def recuperar_senha():
     try:
@@ -167,11 +157,16 @@ def recuperar_senha():
         </html>
         """
         imagem_path = os.path.join(os.path.dirname(app.root_path), 'static', 'colorida.png')
-        enviar_email(fornecedor.email, "Recuperação de Senha", corpo_email, imagem_path)
-        return jsonify(message="Token de recuperação enviado por e-mail"), 200
+        email_enviado = enviar_email(fornecedor.email, "Recuperação de Senha", corpo_email, imagem_path)
+        if not email_enviado:
+            return jsonify(
+                message="Token gerado, mas houve uma falha ao enviar o e-mail de recuperação. "
+                        "Caso o e-mail não chegue em alguns minutos, entre em contato com o suporte.",
+                email_enviado=False
+            ), 202
+        return jsonify(message="Token de recuperação enviado por e-mail", email_enviado=True), 200
     except Exception as e:
         return jsonify(message="Erro ao recuperar senha: " + str(e)), 500
-    
 @app.route("/api/validar-token", methods=["POST"])
 def validar_token():
     try:
@@ -188,7 +183,6 @@ def validar_token():
     except Exception as e:
         print(f"Erro ao validar token: {e}")
         return jsonify(message="Erro ao validar token"), 500
-    
 @app.route("/api/redefinir-senha", methods=["POST"])
 def redefinir_senha():
     data = request.get_json()
@@ -206,7 +200,6 @@ def redefinir_senha():
     fornecedor.token_expira = None
     db.session.commit()
     return jsonify(message="Senha redefinida com sucesso"), 200
-
 @app.route('/api/contato', methods=['POST'])
 def contato():
     try:
@@ -423,21 +416,24 @@ def contato():
 """
 
         imagem_path = os.path.join(os.path.dirname(app.root_path), 'static', 'colorida.png')
-        enviar_email(
+        email_enviado = enviar_email(
             destinatario="lucas.mateus@engeman.net",
             assunto=f"MENSAGEM DO PORTAL: {assunto}",
             corpo=corpo_email,
             imagem_path=imagem_path
         )
-        return jsonify(message="Mensagem enviada com sucesso!"), 200
+        if not email_enviado:
+            return jsonify(
+                message="Mensagem recebida, mas houve falha ao enviar a notificação por e-mail.",
+                email_enviado=False
+            ), 202
+        return jsonify(message="Mensagem enviada com sucesso!", email_enviado=True), 200
     except Exception as e:
         print(f"Erro ao enviar mensagem: {e}")
         return jsonify(message="Erro ao enviar a mensagem."), 500
 def allowed_file(filename):
     allowed_extensions = ['pdf', 'doc', 'docx', 'jpg', 'jpeg', 'png', 'xlsx', 'csv']
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in allowed_extensions
-
-
 @app.route('/api/envio-documento', methods=['POST'])
 def enviar_documento():
     try:
@@ -469,7 +465,7 @@ def enviar_documento():
             arquivos_paths.append(caminho_arquivo)
         db.session.commit()
         link_documentos = [f"/uploads/{fornecedor_id}/{a}" for a in lista_arquivos]
-        enviar_email_documento(
+        email_notificacao_enviado = enviar_email_documento(
             fornecedor_nome=fornecedor.nome,
             documento_nome=", ".join(lista_arquivos),
             categoria=categoria,
@@ -477,14 +473,17 @@ def enviar_documento():
             link_documento=", ".join(link_documentos),
             arquivos_paths=arquivos_paths
         )
-        return jsonify(message="Documentos enviados com sucesso", enviados=lista_arquivos), 200
+        mensagem_resposta = "Documentos enviados com sucesso"
+        if not email_notificacao_enviado:
+            mensagem_resposta += ", mas não foi possível enviar a notificação por e-mail."
+        return jsonify(
+            message=mensagem_resposta,
+            enviados=lista_arquivos,
+            email_enviado=bool(email_notificacao_enviado)
+        ), 200
     except Exception as e:
         return jsonify(message="Erro ao enviar documentos: " + str(e)), 500
-    
-
-    
 @app.route('/api/documentos-necessarios', methods=['POST'])
-
 def documentos_necessarios():
     import pandas as pd
     import os
@@ -493,9 +492,16 @@ def documentos_necessarios():
         categoria = data.get('categoria')
         if not categoria:
             return jsonify(message="Categoria não fornecida"), 400
-        claf_path = os.path.abspath(os.path.join(app.root_path, '..', 'static', 'CLAF.xlsx'))
-        if not os.path.exists(claf_path):
-            return jsonify(message="Planilha CLAF não encontrada"), 500
+        static_dir = os.path.abspath(os.path.join(app.root_path, '..', 'static'))
+        candidatos_arquivo = ['CLAF.xlsx', 'claf.xlsx']
+        claf_path = None
+        for candidato in candidatos_arquivo:
+            candidato_path = os.path.join(static_dir, candidato)
+            if os.path.exists(candidato_path):
+                claf_path = candidato_path
+                break
+        if not claf_path:
+            return jsonify(message="Planilha CLAF não encontrada no diretório static"), 500
         df = pd.read_excel(claf_path, header=0)
         df.columns = df.columns.str.strip().str.replace('\n', '').str.replace('\r', '')
         if 'MATERIAL' not in df.columns:
@@ -514,46 +520,53 @@ def documentos_necessarios():
 def consultar_dados_homologacao():
     try:
         fornecedor_nome = request.args.get('fornecedor_nome', type=str)
-
-        print(f"Buscando dados para o fornecedor com nome: {fornecedor_nome}")
-
+        fornecedor_id_param = request.args.get('fornecedor_id', type=int)
+        fornecedor_codigo = None
+        if fornecedor_id_param is not None:
+            fornecedor_codigo = fornecedor_id_param
+            if not fornecedor_nome:
+                fornecedor_registro = Fornecedor.query.get(fornecedor_id_param)
+                if not fornecedor_registro:
+                    return jsonify(message="Fornecedor não encontrado para o ID informado."), 404
+                fornecedor_nome = fornecedor_registro.nome
+        print(f"Buscando dados para o fornecedor com nome: {fornecedor_nome} e ID: {fornecedor_id_param}")
         if not fornecedor_nome:
-
-            return jsonify(message="Parâmetro 'fornecedor_nome' é obrigatório."), 400
-        
-        path_homologados = os.path.abspath(os.path.join(app.root_path, '..', 'static', 'fornecedores_homologados.xlsx'))
-
-        path_controle = os.path.abspath(os.path.join(app.root_path, '..', 'static', 'atendimento controle_qualidade.xlsx'))
-
+            return jsonify(message="Parâmetro 'fornecedor_nome' ou 'fornecedor_id' é obrigatório."), 400
+        path_homologados = os.path.abspath(
+            os.path.join(app.root_path, '..', 'static', 'fornecedores_homologados.xlsx')
+        )
+        path_controle = os.path.abspath(
+            os.path.join(app.root_path, '..', 'static', 'atendimento controle_qualidade.xlsx')
+        )
         print(f"Caminho do arquivo de homologados: {path_homologados}")
-
         print(f"Caminho do arquivo de controle de qualidade: {path_controle}")
-
         if not os.path.exists(path_homologados) or not os.path.exists(path_controle):
             return jsonify(
                 message="Um ou mais arquivos de planilha não foram encontrados. Verifique os caminhos dos arquivos."
             ), 500
         df_homologacao = pd.read_excel(path_homologados)
-
         df_controle_qualidade = pd.read_excel(path_controle)
-
         df_homologacao.columns = (
             df_homologacao.columns.str.strip().str.lower().str.replace(" ", "_")
         )
-
         df_controle_qualidade.columns = (
             df_controle_qualidade.columns.str.strip().str.lower().str.replace(" ", "_")
         )
-        filtro_homologados = df_homologacao[
-            df_homologacao['agente'].str.contains(fornecedor_nome, case=False, na=False)
-        ]
+        filtro_homologados = df_homologacao.iloc[0:0]
+        if fornecedor_codigo is not None and 'codigo' in df_homologacao.columns:
+            try:
+                codigo_series = pd.to_numeric(df_homologacao['codigo'], errors='coerce')
+                filtro_homologados = df_homologacao[codigo_series == fornecedor_codigo]
+            except Exception as conv_err:
+                print(f"Erro ao converter coluna 'codigo' para numeric: {conv_err}")
+        if filtro_homologados.empty and fornecedor_nome and 'agente' in df_homologacao.columns:
+            filtro_homologados = df_homologacao[
+                df_homologacao['agente'].str.contains(fornecedor_nome, case=False, na=False)
+            ]
         if filtro_homologados.empty:
             return jsonify(message="Fornecedor não encontrado na planilha de homologados."), 404
-        
         fornecedor_h = filtro_homologados.iloc[0]
-
         print(f"Fornecedor encontrado: {fornecedor_h}")
-
         fornecedor_id_raw = fornecedor_h.get('codigo')
         fornecedor_id = int(fornecedor_id_raw) if pd.notna(fornecedor_id_raw) else None
         nota_homologacao_raw = fornecedor_h.get('nota_homologacao')
@@ -562,31 +575,38 @@ def consultar_dados_homologacao():
         iqf = float(iqf_raw) if iqf_raw is not None and not pd.isna(iqf_raw) else None
         aprovado_raw = fornecedor_h.get('aprovado')
         aprovado_valor = ''
-
         if aprovado_raw is not None and not pd.isna(aprovado_raw):
-
             aprovado_valor = str(aprovado_raw).strip()
         status_homologacao = 'APROVADO' if aprovado_valor.upper() == 'S' else 'EM_ANALISE'
         filtro_ocorrencias = df_controle_qualidade[
             df_controle_qualidade['nome_agente'].str.strip().str.lower()
             == fornecedor_h['agente'].strip().lower()
         ] if 'nome_agente' in df_controle_qualidade.columns else df_controle_qualidade.iloc[0:0]
-
         if filtro_ocorrencias.empty and 'nome_agente' in df_controle_qualidade.columns and fornecedor_nome:
             filtro_ocorrencias = df_controle_qualidade[
                 df_controle_qualidade['nome_agente'].str.contains(fornecedor_nome, case=False, na=False)
             ]
         media_iqf_controle = None
         total_notas_controle = 0
+
         if not filtro_ocorrencias.empty and 'nota' in filtro_ocorrencias.columns:
+
             notas_validas = pd.to_numeric(filtro_ocorrencias['nota'], errors='coerce').dropna()
+
             total_notas_controle = len(notas_validas)
+
             if total_notas_controle:
+
                 media_iqf_controle = float(notas_validas.mean())
+
                 print(f"Total de notas encontradas no controle de qualidade: {total_notas_controle}")
+
                 print(f"IQF calculada a partir do controle de qualidade: {media_iqf_controle}")
+
         observacoes_lista = []
+
         observacao_resumo = ''
+
         if 'observacao' in filtro_ocorrencias.columns:
             observacoes_series = (
                 filtro_ocorrencias['observacao']
@@ -595,24 +615,36 @@ def consultar_dados_homologacao():
                 .str.strip()
             )
             observacoes_filtradas = []
+
             for obs in observacoes_series.tolist():
+
                 obs_limpo = obs.strip()
+
                 if not obs_limpo:
+
                     continue
+
                 obs_normalizado = ''.join(
                     ch for ch in unicodedata.normalize('NFD', obs_limpo.lower())
                     if unicodedata.category(ch) != 'Mn'
                 )
                 obs_normalizado = ''.join(ch for ch in obs_normalizado if ch.isalnum() or ch.isspace())
+
                 obs_normalizado = ' '.join(obs_normalizado.split())
+
                 if obs_normalizado == 'sem comentarios':
                     continue
                 observacoes_filtradas.append(obs_limpo)
+
             observacoes_lista = observacoes_filtradas
+
             if observacoes_filtradas:
                 observacao_resumo = '; '.join(observacoes_filtradas)
+
         iqf_final = media_iqf_controle if media_iqf_controle is not None else iqf
+
         status_homologacao = _determinar_status_final(aprovado_valor, nota_homologacao, iqf_final, iqf)
+
         return jsonify(
             id=fornecedor_id,
             nome=str(fornecedor_h.get('agente', '')),
@@ -625,13 +657,18 @@ def consultar_dados_homologacao():
             iqf_homologados=iqf,
             total_notas_iqf=total_notas_controle
         ), 200
+    
     except FileNotFoundError as fnf:
         return jsonify(message=f"Arquivo de planilha não encontrado: {str(fnf)}"), 500
+    
     except Exception as e:
+
         print(f"Erro inesperado ao consultar dados de homologação: {str(e)}")
+
         return jsonify(message="Erro ao consultar dados de homologação", error_details=str(e)), 500
     
 def _normalize_text(value):
+
     if value is None:
         return ''
     normalized = ''.join(
@@ -641,20 +678,32 @@ def _normalize_text(value):
     normalized = ''.join(ch for ch in normalized if ch.isalnum() or ch.isspace())
     return ' '.join(normalized.split())
 
+
 def _carregar_planilhas_homologacao():
-    path_homologados = os.path.abspath(os.path.join(app.root_path, '..', 'static', 'fornecedores_homologados.xlsx'))
-    path_controle = os.path.abspath(os.path.join(app.root_path, '..', 'static', 'atendimento controle_qualidade.xlsx'))
+    path_homologados = os.path.abspath(
+        os.path.join(app.root_path, '..', 'static', 'fornecedores_homologados.xlsx')
+    )
+    path_controle = os.path.abspath(
+        os.path.join(app.root_path, '..', 'static', 'atendimento controle_qualidade.xlsx')
+    )
+
     if not os.path.exists(path_homologados) or not os.path.exists(path_controle):
+
         raise FileNotFoundError('Planilhas necessárias não foram encontradas')
+    
     df_homologados = pd.read_excel(path_homologados)
+
     df_controle = pd.read_excel(path_controle)
+
     df_homologados.columns = (
         df_homologados.columns.str.strip().str.lower().str.replace(' ', '_')
     )
+
     df_controle.columns = (
         df_controle.columns.str.strip().str.lower().str.replace(' ', '_')
     )
     return df_homologados, df_controle
+
 
 def _to_float(value):
     try:
@@ -664,24 +713,36 @@ def _to_float(value):
     except (TypeError, ValueError):
         return None
     
+
 def _calcular_media_iqf_controle(fornecedor_nome_planilha, fornecedor_nome_busca, df_controle):
+
     if df_controle is None or df_controle.empty:
+
         return None, 0, []
+    
     if 'nome_agente' not in df_controle.columns:
+
         return None, 0, []
+    
     nomes_series = df_controle['nome_agente'].astype(str)
+
     normalizados = nomes_series.apply(_normalize_text).astype(str)
+
     alvo_normalizado = _normalize_text(fornecedor_nome_planilha or fornecedor_nome_busca)
+
     mask = normalizados == alvo_normalizado
     if not mask.any():
         mask = normalizados.str.contains(_normalize_text(fornecedor_nome_busca), regex=False)
+
     subset = df_controle[mask]
     if subset.empty:
         return None, 0, []
+    
     notas_validas = pd.to_numeric(subset.get('nota'), errors='coerce').dropna()
     total = len(notas_validas)
     media = float(notas_validas.mean()) if total else None
     observacoes = []
+
     if 'observacao' in subset.columns:
         observacoes = subset['observacao'].dropna().astype(str).tolist()
     return media, total, observacoes
@@ -698,13 +759,16 @@ def _determinar_status_final(aprovado_valor, nota_homologacao, iqf_calculada, no
         return 'APROVADO'
     return 'EM_ANALISE'
 
+
 def _montar_registro_admin(fornecedor, df_homologados, df_controle):
+
     status = 'EM_ANALISE'
     nota_homologacao = None
     nota_iqf_planilha = None
     fornecedor_nome_planilha = fornecedor.nome
     aprovado_valor = ''
     registros_compativeis = pd.DataFrame()
+
     if df_homologados is not None and not df_homologados.empty:
         candidatos = []
         for coluna in ['agente', 'nome_fantasia']:
@@ -729,7 +793,7 @@ def _montar_registro_admin(fornecedor, df_homologados, df_controle):
         registro = registros_compativeis.iloc[0]
         fornecedor_nome_planilha = str(registro.get('agente', fornecedor.nome))
         aprovado_valor = str(registro.get('aprovado', '')).strip().upper()
-        nota_homologacao = _to_float(registro.get('nota homologacao'))
+        nota_homologacao = _to_float(registro.get('nota_homologacao'))
         nota_iqf_planilha = _to_float(registro.get('iqf'))
     media_iqf_controle, total_notas_controle, observacoes_lista = _calcular_media_iqf_controle(
         fornecedor_nome_planilha, fornecedor.nome, df_controle
@@ -801,14 +865,12 @@ def admin_login():
         print(f'Erro no login admin: {exc}')
         return jsonify(message='Erro ao autenticar administrador'), 500
     
+
 @app.route('/api/admin/dashboard', methods=['GET'])
 
 @jwt_required()
-
 def painel_admin_dashboard():
-
     if not _admin_usuario_autorizado():
-
         return jsonify(message='Acesso nao autorizado.'), 403
     try:
         fornecedores_db = Fornecedor.query.all()
@@ -819,7 +881,6 @@ def painel_admin_dashboard():
         for fornecedor in fornecedores_db:
             info = _montar_registro_admin(fornecedor, df_homologados, df_controle)
             status_counts[info['status']] = status_counts.get(info['status'], 0) + 1
-
         return jsonify(
             total_cadastrados=total_cadastrados,
             total_aprovados=status_counts.get('APROVADO', 0),
@@ -827,15 +888,12 @@ def painel_admin_dashboard():
             total_reprovados=status_counts.get('REPROVADO', 0),
             total_documentos=total_documentos
         ), 200
-    
     except FileNotFoundError as e:
         return jsonify(message=str(e)), 500
-    
     except Exception as exc:
         print(f'Erro no dashboard admin: {exc}')
         return jsonify(message='Erro ao gerar dashboard administrativo'), 500
     
-
 
 @app.route('/api/admin/fornecedores', methods=['GET'])
 @jwt_required()
@@ -868,13 +926,9 @@ def painel_admin_fornecedores():
     
 
 @app.route('/api/admin/notificacoes', methods=['GET'])
-
 @jwt_required()
-
 def painel_admin_notificacoes():
-
     if not _admin_usuario_autorizado():
-
         return jsonify(message='Acesso não autorizado.'), 403
     try:
         limite = request.args.get('limit', 20, type=int)
@@ -894,7 +948,6 @@ def painel_admin_notificacoes():
                     'cnpj': fornecedor.cnpj
                 }
             })
-
         documentos = Documento.query.order_by(Documento.data_upload.desc()).limit(limite).all()
         for doc in documentos:
             fornecedor = doc.fornecedor
@@ -915,18 +968,15 @@ def painel_admin_notificacoes():
         eventos.sort(key=lambda item: item['timestamp'], reverse=True)
         eventos = eventos[:limite]
         return jsonify(eventos), 200
-    
     except Exception as exc:
         print(f'Erro ao obter notificações admin: {exc}')
         return jsonify(message='Erro ao listar notificações'), 500
     
 
+
 @app.route('/api/fornecedores', methods=['GET'])
-
 def listar_fornecedores():
-
     nome = request.args.get('nome', '')
-
     print(f"Buscando fornecedores com nome: {nome}")
     if nome:
         fornecedores = Fornecedor.query.filter(Fornecedor.nome.ilike(f'%{nome}%')).all()
@@ -935,7 +985,6 @@ def listar_fornecedores():
     print(f"Fornecedores encontrados: {len(fornecedores)}")
     lista = [{"id": f.id, "nome": f.nome, "email": f.email, "cnpj": f.cnpj} for f in fornecedores]
     return jsonify(lista)
-
 def enviar_email_documento(fornecedor_nome, documento_nome, categoria, destinatario, link_documento, arquivos_paths=None):
     corpo = f"""
     <!DOCTYPE html>
@@ -1219,28 +1268,25 @@ def enviar_email_documento(fornecedor_nome, documento_nome, categoria, destinata
                 with app.open_resource(arquivo_path) as fp:
                     msg.attach(arquivo_path, "application/octet-stream", fp.read())
         mail.send(msg)
-
         print(f'E-mail enviado para {destinatario}')
-
+        return True
     except Exception as e:
         print(f"Erro ao enviar e-mail para {destinatario}: {e}")
-        return None
+        return False
     
 def enviar_email(destinatario, assunto, corpo, imagem_path):
     try:
         msg = Message(assunto, recipients=[destinatario], html=corpo)
-        
         with open(imagem_path, "rb") as img:
             img_data = img.read()
             encoded_img = base64.b64encode(img_data).decode('utf-8')
         corpo_com_imagem = corpo.replace("cid:engeman_logo", f"data:image/png;base64,{encoded_img}")
         msg.html = corpo_com_imagem
         mail.send(msg)
-
+        return True
     except Exception as e:
         print(f"Erro ao enviar e-mail: {e}")
-        raise e
-    
+        return False
 def gerar_token_recuperacao():
     return random.randint(100000, 999999)
 if __name__ == '__main__':

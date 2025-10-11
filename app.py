@@ -213,7 +213,7 @@ def cadastrar_fornecedor():
         )
         db.session.add(fornecedor)
         db.session.commit()
-        access_token = create_access_token(identity=fornecedor.id)
+        access_token = create_access_token(identity=str(fornecedor.id))
         return (
             jsonify(
                 message="Fornecedor cadastrado com sucesso",
@@ -240,7 +240,7 @@ def login():
         if fornecedor:
             app.logger.info(f"Fornecedor encontrado: {fornecedor.email}")
             if check_password_hash(fornecedor.senha, senha):
-                access_token = create_access_token(identity=fornecedor.id)
+                access_token = create_access_token(identity=str(fornecedor.id))
                 app.logger.info(f"Token gerado para o fornecedor {fornecedor.email}")
                 return jsonify(access_token=access_token), 200
             else:
@@ -764,7 +764,12 @@ def listar_categorias():
 @jwt_required()
 def portal_resumo():
     try:
-        fornecedor_id = get_jwt_identity()
+        identidade = get_jwt_identity()
+        try:
+            fornecedor_id = int(identidade) if identidade is not None else None
+        except (TypeError, ValueError):
+            return jsonify(message="Token inválido: identidade não é numérica."), 422
+
         fornecedor = Fornecedor.query.get(fornecedor_id) if fornecedor_id else None
         if not fornecedor:
             return jsonify(message="Fornecedor não encontrado."), 404

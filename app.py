@@ -32,6 +32,12 @@ ADMIN_ALLOWED_EMAILS = {
 
 ADMIN_PASSWORD = 'admin123'
 
+ALLOWED_CORS_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://portalengeman-front.vercel.app",
+]
+
 
 def _build_static_search_paths():
     """
@@ -83,16 +89,39 @@ def _resolve_static_file(*possible_names):
     return None
 CORS(
     app,
-    resources={
-        r"/api/*": {
-            "origins": [
-                "http://localhost:3000",
-                "http://127.0.0.1:3000",
-                "https://portalengeman-front.vercel.app",
-            ]
-        }
-    },
+    resources={r"/api/*": {"origins": ALLOWED_CORS_ORIGINS}},
+    supports_credentials=True,
+    expose_headers=["Content-Disposition"],
 )
+
+
+@app.after_request
+def _add_api_cors_headers(response):
+    if request.path.startswith('/api/'):
+        origin = request.headers.get('Origin')
+        if origin in ALLOWED_CORS_ORIGINS:
+            response.headers['Access-Control-Allow-Origin'] = origin
+            vary_header = response.headers.get('Vary')
+            if vary_header:
+                vary_values = [item.strip() for item in vary_header.split(',')]
+                if 'Origin' not in vary_values:
+                    response.headers['Vary'] = f"{vary_header}, Origin"
+            else:
+                response.headers['Vary'] = 'Origin'
+            response.headers.setdefault('Access-Control-Allow-Credentials', 'true')
+            acr_headers = request.headers.get('Access-Control-Request-Headers')
+            if acr_headers:
+                response.headers['Access-Control-Allow-Headers'] = acr_headers
+            else:
+                response.headers.setdefault(
+                    'Access-Control-Allow-Headers',
+                    'Authorization, Content-Type, X-Requested-With'
+                )
+            response.headers.setdefault(
+                'Access-Control-Allow-Methods',
+                'GET, POST, PUT, PATCH, DELETE, OPTIONS'
+            )
+    return response
 
 app.config.from_object(Config)
 db.init_app(app)
@@ -495,6 +524,13 @@ def contato():
 def allowed_file(filename):
     allowed_extensions = ['pdf', 'doc', 'docx', 'jpg', 'jpeg', 'png', 'xlsx', 'csv']
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in allowed_extensions
+
+
+@app.route('/api/envio-documento', methods=['OPTIONS'])
+def preflight_envio_documento():
+    return '', 204
+
+
 @app.route('/api/envio-documento', methods=['POST'])
 def enviar_documento():
     try:
@@ -579,18 +615,26 @@ def documentos_necessarios():
 @app.route('/api/dados-homologacao', methods=['GET'])
 def consultar_dados_homologacao():
     try:
-        fornecedor_nome = request.args.get('fornecedor_nome', type=str)
+        fornecedor_nome_param = request.args.get('fornecedor_nome', type=str)
         fornecedor_id_param = request.args.get('fornecedor_id', type=int)
-        fornecedor_codigo = None
+        fornecedor_codigo_param = request.args.get('fornecedor_codigo', type=str)
+
+        fornecedor_nome = fornecedor_nome_param.strip() if fornecedor_nome_param else None
+        fornecedor_registro = None
+
         if fornecedor_id_param is not None:
-            fornecedor_codigo = fornecedor_id_param
+            fornecedor_registro = Fornecedor.query.get(fornecedor_id_param)
+            if not fornecedor_registro:
+                return jsonify(message="Fornecedor não encontrado para o ID informado."), 404
             if not fornecedor_nome:
-                fornecedor_registro = Fornecedor.query.get(fornecedor_id_param)
-                if not fornecedor_registro:
-                    return jsonify(message="Fornecedor não encontrado para o ID informado."), 404
                 fornecedor_nome = fornecedor_registro.nome
-        print(f"Buscando dados para o fornecedor com nome: {fornecedor_nome} e ID: {fornecedor_id_param}")
-        if not fornecedor_nome:
+
+        fornecedor_nome_busca = fornecedor_nome or (fornecedor_registro.nome if fornecedor_registro else None)
+        print(
+            "Buscando dados para o fornecedor com nome: "
+            f"{fornecedor_nome_busca} e ID: {fornecedor_id_param}"
+        )
+        if not fornecedor_nome_busca:
             return jsonify(message="Parâmetro 'fornecedor_nome' ou 'fornecedor_id' é obrigatório."), 400
         path_homologados = _resolve_static_file('fornecedores_homologados.xlsx')
         path_controle = _resolve_static_file('atendimento controle_qualidade.xlsx', 'atendimento_controle_qualidade.xlsx')
@@ -621,16 +665,39 @@ def consultar_dados_homologacao():
             df_controle_qualidade.columns.str.strip().str.lower().str.replace(" ", "_")
         )
         filtro_homologados = df_homologacao.iloc[0:0]
-        if fornecedor_codigo is not None and 'codigo' in df_homologacao.columns:
+        nome_normalizado_busca = _normalize_text(fornecedor_nome_busca)
+        colunas_busca = ['agente', 'nome_fantasia']
+        for coluna in colunas_busca:
+            if not nome_normalizado_busca or coluna not in df_homologacao.columns:
+                continue
+            normalizados = df_homologacao[coluna].fillna('').astype(str).apply(_normalize_text)
+            correspondencia_exata = df_homologacao[normalizados == nome_normalizado_busca]
+            if not correspondencia_exata.empty:
+                filtro_homologados = correspondencia_exata
+                break
+            correspondencia_parcial = df_homologacao[
+                normalizados.str.contains(nome_normalizado_busca, na=False, regex=False)
+            ]
+            if not correspondencia_parcial.empty:
+                filtro_homologados = correspondencia_parcial
+                break
+        if filtro_homologados.empty and fornecedor_codigo_param and 'codigo' in df_homologacao.columns:
             try:
                 codigo_series = pd.to_numeric(df_homologacao['codigo'], errors='coerce')
-                filtro_homologados = df_homologacao[codigo_series == fornecedor_codigo]
+                codigo_busca = pd.to_numeric(pd.Series([fornecedor_codigo_param]), errors='coerce').iloc[0]
+                if pd.notna(codigo_busca):
+                    filtro_homologados = df_homologacao[codigo_series == codigo_busca]
             except Exception as conv_err:
-                print(f"Erro ao converter coluna 'codigo' para numeric: {conv_err}")
-        if filtro_homologados.empty and fornecedor_nome and 'agente' in df_homologacao.columns:
+                print(f"Erro ao converter parâmetro 'fornecedor_codigo' para numérico: {conv_err}")
+        if filtro_homologados.empty and fornecedor_registro and 'agente' in df_homologacao.columns:
+            normalizados = df_homologacao['agente'].fillna('').astype(str).apply(_normalize_text)
             filtro_homologados = df_homologacao[
-                df_homologacao['agente'].str.contains(fornecedor_nome, case=False, na=False)
+                normalizados.str.contains(_normalize_text(fornecedor_registro.nome), na=False, regex=False)
             ]
+        if not filtro_homologados.empty and 'data_vencimento' in filtro_homologados.columns:
+            filtro_homologados = filtro_homologados.sort_values(
+                by='data_vencimento', ascending=False, na_position='last'
+            )
         if filtro_homologados.empty:
             return jsonify(message="Fornecedor não encontrado na planilha de homologados."), 404
         fornecedor_h = filtro_homologados.iloc[0]
@@ -646,14 +713,18 @@ def consultar_dados_homologacao():
         if aprovado_raw is not None and not pd.isna(aprovado_raw):
             aprovado_valor = str(aprovado_raw).strip()
         status_homologacao = 'APROVADO' if aprovado_valor.upper() == 'S' else 'EM_ANALISE'
-        filtro_ocorrencias = df_controle_qualidade[
-            df_controle_qualidade['nome_agente'].str.strip().str.lower()
-            == fornecedor_h['agente'].strip().lower()
-        ] if 'nome_agente' in df_controle_qualidade.columns else df_controle_qualidade.iloc[0:0]
-        if filtro_ocorrencias.empty and 'nome_agente' in df_controle_qualidade.columns and fornecedor_nome:
-            filtro_ocorrencias = df_controle_qualidade[
-                df_controle_qualidade['nome_agente'].str.contains(fornecedor_nome, case=False, na=False)
-            ]
+        filtro_ocorrencias = df_controle_qualidade.iloc[0:0]
+        if 'nome_agente' in df_controle_qualidade.columns:
+            normalizados_ocorrencias = df_controle_qualidade['nome_agente'].fillna('').astype(str).apply(_normalize_text)
+            agente_planilha_normalizado = _normalize_text(fornecedor_h.get('agente'))
+            if agente_planilha_normalizado:
+                filtro_ocorrencias = df_controle_qualidade[
+                    normalizados_ocorrencias == agente_planilha_normalizado
+                ]
+            if filtro_ocorrencias.empty and nome_normalizado_busca:
+                filtro_ocorrencias = df_controle_qualidade[
+                    normalizados_ocorrencias.str.contains(nome_normalizado_busca, na=False, regex=False)
+                ]
         media_iqf_controle = None
         total_notas_controle = 0
 

@@ -53,6 +53,7 @@ def _build_allowed_cors_origins():
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "https://portalengeman-front.vercel.app",
+        "https://portalfornecedor-engeman.vercel.app",
     ]
     env_origins = os.environ.get("ALLOWED_CORS_ORIGINS", "")
     if env_origins:
@@ -1964,14 +1965,14 @@ def enviar_email(destinatario, assunto, corpo, imagem_path):
 def _enviar_email_decisao_fornecedor(fornecedor: Fornecedor, decisao: DecisaoFornecedor):
     status_legivel = "Aprovado" if decisao.status == "APROVADO" else "Reprovado"
     cor_status = "#10b981" if decisao.status == "APROVADO" else "#ef4444"
-    observacao = decisao.observacao or "Em caso de duvidas, entre em contato com o time Engeman."
+    observacao = decisao.observacao or "Em caso de dúvidas, entre em contato com o time de Suprimentos."
     corpo = f"""
     <!DOCTYPE html>
     <html lang="pt-BR">
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-        <title>Decisao de Homologacao</title>
+        <title>Decisão de Homologação</title>
         <style>
             body {{
                 font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -1990,7 +1991,7 @@ def _enviar_email_decisao_fornecedor(fornecedor: Fornecedor, decisao: DecisaoFor
             .header {{
                 padding: 32px;
                 background: linear-gradient(135deg, #f97316 0%, #ef4444 100%);
-                color: #fff;
+                color: black;
             }}
             .content {{
                 padding: 32px;
@@ -2024,36 +2025,36 @@ def _enviar_email_decisao_fornecedor(fornecedor: Fornecedor, decisao: DecisaoFor
         <div class="wrapper">
             <div class="header">
                 <h1>Portal de Fornecedores Engeman</h1>
-                <p>Decisao sobre o processo de homologacao</p>
+                <p>Decisão sobre o processo de homologação</p>
             </div>
             <div class="content">
                 <p>Ola, <strong>{fornecedor.nome}</strong>.</p>
                 <span class="status-pill">Status: {status_legivel}</span>
                 <p>
-                    Suas documentacoes foram analisadas pela equipe Engeman e o processo de homologacao foi
+                    Suas documentações foram analisadas e o processo de homologação foi
                     finalizado com o status <strong>{status_legivel.upper()}</strong>.
                 </p>
                 <div class="card">
                     <p><strong>Resumo</strong></p>
                     <ul style="margin: 12px 0 0 18px; padding: 0; color: #475569;">
-                        <li><strong>Nota de referencia:</strong> {decisao.nota_referencia if decisao.nota_referencia is not None else 'Nao informada'}</li>
-                        <li><strong>Observacoes:</strong> {observacao}</li>
+                        <li><strong>Nota de referência:</strong> {decisao.nota_referencia if decisao.nota_referencia is not None else 'Não informada'}</li>
+                        <li><strong>Observações:</strong> {observacao}</li>
                     </ul>
                 </div>
                 <p style="margin-top: 20px;">
-                    Caso necessite de alguma revisao ou queira enviar novos documentos, acesse o portal de fornecedores Engeman.
+                    Caso necessite de alguma revisão ou queira enviar novos documentos, acesse o portal de Fornecedores Engeman.
                 </p>
             </div>
             <div class="footer">
                 <p>
-                    Esta e uma comunicacao automatica do Portal de Fornecedores Engeman. Nao responda este e-mail.
+                    Está é uma comunicação automática do Portal de Fornecedores Engeman. Não responda este e-mail.
                 </p>
             </div>
         </div>
     </body>
     </html>
     """
-    assunto = f"Portal Engeman - Resultado de homologacao: {status_legivel}"
+    assunto = f"Portal Engeman - Resultado de homologação: {status_legivel}"
     imagem_path = _resolve_static_file("colorida.png")
     return enviar_email(fornecedor.email, assunto, corpo, imagem_path)
 

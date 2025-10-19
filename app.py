@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_from_directory
 from flask_sqlalchemy import SQLAlchemy
 from flask_jwt_extended import (
     JWTManager,
@@ -9,7 +9,7 @@ from flask_jwt_extended import (
 )
 from flask_mail import Mail, Message
 from config import Config
-from models import db, Fornecedor, Documento, Homologacao
+from models import db, Fornecedor, Documento, Homologacao, DecisaoFornecedor
 from werkzeug.security import generate_password_hash, check_password_hash
 import random
 import base64
@@ -29,6 +29,9 @@ UPLOAD_FOLDER = os.path.join(os.path.abspath(os.path.dirname(__file__)), "upload
 ALLOWED_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "docx", "xlsx"}
 
 app.config["UPLOAD_FOLDER"] = UPLOAD_FOLDER
+
+
+"""E-mails definidos com acesso a tela de admin"""
 
 ADMIN_ALLOWED_EMAILS = {
     "pedro.vilaca@engeman.net",
@@ -196,6 +199,10 @@ with app.app_context():
 def home():
     return "Bem-vindo ao Portal de Fornecedores!"
 
+"""Tela de cadastro dos fornecedores. 
+Guardando os dados com: CNPJ, E-mail, 
+Senha e gera um token que é guardado no banco de dados."""
+
 
 @app.route("/api/cadastro", methods=["POST"])
 def cadastrar_fornecedor():
@@ -225,7 +232,10 @@ def cadastrar_fornecedor():
     except Exception as e:
         print(str(e))
         return jsonify(message="Erro ao cadastrar fornecedor: " + str(e)), 500
+    
 
+"""Puxa o e-mail e senha cadastrado, 
+validando o acesso á tela do portal."""
 
 @app.route("/api/login", methods=["POST"])
 def login():
@@ -253,7 +263,10 @@ def login():
     except Exception as e:
         app.logger.error(f"Erro no login: {str(e)}")
         return jsonify(message="Erro ao autenticar, tente novamente mais tarde."), 500
+    
 
+"""Validando a recuperação de senha,
+ busca pelo e-mail ou token cadastrado."""
 
 @app.route("/api/recuperar-senha", methods=["POST"])
 def recuperar_senha():
@@ -343,7 +356,10 @@ def recuperar_senha():
         )
     except Exception as e:
         return jsonify(message="Erro ao recuperar senha: " + str(e)), 500
+    
 
+"""Valida o token enviado no e-mail, após o cadastro da nova senha, 
+a senha antiga é excluida do banco de dados e cadastrado a nova."""
 
 @app.route("/api/validar-token", methods=["POST"])
 def validar_token():
@@ -363,6 +379,9 @@ def validar_token():
         return jsonify(message="Erro ao validar token"), 500
 
 
+"""Tela de nova validação de senha, 
+aceitando  a nova senha colocando como substitua da antiga senha cadastrada."""
+
 @app.route("/api/redefinir-senha", methods=["POST"])
 def redefinir_senha():
     data = request.get_json()
@@ -381,6 +400,8 @@ def redefinir_senha():
     db.session.commit()
     return jsonify(message="Senha redefinida com sucesso"), 200
 
+
+"""Tela de contato, com campos de dúvidas que será enviada para o e-mail"""
 
 @app.route("/api/contato", methods=["POST"])
 def contato():
@@ -623,6 +644,9 @@ def allowed_file(filename):
     return "." in filename and filename.rsplit(".", 1)[1].lower() in allowed_extensions
 
 
+"""Anexa o envio de documentos, permitindo envia-los para o e-mail"""
+
+
 @app.route("/api/envio-documento", methods=["OPTIONS"])
 def preflight_envio_documento():
     return "", 204
@@ -687,7 +711,9 @@ def enviar_documento():
         )
     except Exception as e:
         return jsonify(message="Erro ao enviar documentos: " + str(e)), 500
+    
 
+"""Seleciona a categoria buscando as documentações necessárias para cadastro/homologação"""
 
 @app.route("/api/documentos-necessarios", methods=["POST"])
 def documentos_necessarios():
@@ -727,6 +753,9 @@ def documentos_necessarios():
         return jsonify(documentos=documentos), 200
     except Exception as e:
         return jsonify(message="Erro ao consultar documentos: " + str(e)), 500
+    
+
+"""Busca as colunas da planilha CLAF com as categorias disponivéis"""
 
 
 @app.route("/api/categorias", methods=["GET"])
@@ -759,6 +788,7 @@ def listar_categorias():
             500,
         )
 
+"""Resume os dados necessários dos fornecedores, sem precisar buscar pelo nome."""
 
 @app.route("/api/portal/resumo", methods=["GET"])
 @jwt_required()
@@ -781,6 +811,7 @@ def portal_resumo():
         observacao_resumo = ""
         total_notas = 0
         ultima_atividade = None
+        decisao_info = None
 
         try:
             df_homologados, df_controle = _carregar_planilhas_homologacao()
@@ -801,6 +832,13 @@ def portal_resumo():
             observacao_resumo = "; ".join(observacoes) if observacoes else ""
             total_notas = info.get("total_notas_iqf") or len(observacoes)
             ultima_atividade = info.get("ultima_atividade")
+            decisao_info = info.get("decisao_admin")
+            if decisao_info and decisao_info.get("status"):
+                status_final = decisao_info.get("status")
+                if decisao_info.get("observacao"):
+                    observacao_resumo = decisao_info.get("observacao")
+                    if observacoes is not None:
+                        observacoes.append(decisao_info.get("observacao"))
 
         if isinstance(ultima_atividade, str) and ultima_atividade:
             ultima_atualizacao = ultima_atividade
@@ -841,6 +879,7 @@ def portal_resumo():
             "observacao": observacao_resumo,
             "ultimaAtualizacao": ultima_atualizacao,
             "documentos": documentos,
+            "decisaoAdmin": decisao_info,
         }
         return jsonify(resumo=resumo), 200
     except Exception as exc:
@@ -852,6 +891,7 @@ def portal_resumo():
             500,
         )
 
+"""Consulta os dados de homologação da planilha"""
 
 @app.route("/api/dados-homologacao", methods=["GET"])
 def consultar_dados_homologacao():
@@ -1124,6 +1164,7 @@ def consultar_dados_homologacao():
             500,
         )
 
+"""Deixa o texto formalizado"""
 
 def _normalize_text(value):
 
@@ -1137,6 +1178,7 @@ def _normalize_text(value):
     normalized = "".join(ch for ch in normalized if ch.isalnum() or ch.isspace())
     return " ".join(normalized.split())
 
+"""Carrega os dados das planilhas com a média de homologação e IQF"""
 
 def _carregar_planilhas_homologacao():
     path_homologados = _resolve_static_file("fornecedores_homologados.xlsx")
@@ -1162,6 +1204,7 @@ def _carregar_planilhas_homologacao():
     )
     return df_homologados, df_controle
 
+"""Converte o valor float"""
 
 def _to_float(value):
     try:
@@ -1171,6 +1214,8 @@ def _to_float(value):
     except (TypeError, ValueError):
         return None
 
+
+"""Calcula a média total IQF"""
 
 def _calcular_media_iqf_controle(
     fornecedor_nome_planilha, fornecedor_nome_busca, df_controle
@@ -1211,7 +1256,7 @@ def _calcular_media_iqf_controle(
         observacoes = subset["observacao"].dropna().astype(str).tolist()
     return media, total, observacoes
 
-
+"""#Mostra o Status final#"""
 def _determinar_status_final(
     aprovado_valor, nota_homologacao, iqf_calculada, nota_iqf_planilha
 ):
@@ -1224,12 +1269,13 @@ def _determinar_status_final(
         return "REPROVADO"
     if aprovado_valor == "S":
         return "APROVADO"
-    return "EM_ANALISE"
+    return "A CADASTRAR"
 
+"""#Confere os dados na tela principal de admin#"""
 
 def _montar_registro_admin(fornecedor, df_homologados, df_controle):
 
-    status = "EM_ANALISE"
+    status = "A CADASTRAR"
     nota_homologacao = None
     nota_iqf_planilha = None
     fornecedor_nome_planilha = fornecedor.nome
@@ -1275,12 +1321,26 @@ def _montar_registro_admin(fornecedor, df_homologados, df_controle):
     status_final = _determinar_status_final(
         aprovado_valor, nota_homologacao, iqf_final, nota_iqf_planilha
     )
+    decisao_payload = None
+    decisao = getattr(fornecedor, "decisao_admin", None)
+    if decisao:
+        status_final = (decisao.status or status_final or "").strip().upper() or status_final
+        decisao_payload = {
+            "status": status_final,
+            "notaReferencia": decisao.nota_referencia,
+            "observacao": decisao.observacao or "",
+            "avaliador": decisao.avaliador_email,
+            "atualizadoEm": decisao.atualizado_em.isoformat() if decisao.atualizado_em else None,
+            "emailEnviadoEm": decisao.email_enviado_em.isoformat() if decisao.email_enviado_em else None,
+        }
+
     documentos = [
         {
             "id": doc.id,
             "nome": doc.nome_documento,
             "categoria": doc.categoria,
             "data_upload": doc.data_upload.isoformat() if doc.data_upload else None,
+            "url": f"/api/admin/documentos/{doc.id}/download",
         }
         for doc in fornecedor.documentos
     ]
@@ -1288,8 +1348,12 @@ def _montar_registro_admin(fornecedor, df_homologados, df_controle):
         [doc.data_upload for doc in fornecedor.documentos if doc.data_upload],
         default=None,
     )
+    if decisao and decisao.atualizado_em:
+        ultima_atividade_candidates = [valor for valor in [fornecedor.data_cadastro, ultima_doc, decisao.atualizado_em] if valor]
+    else:
+        ultima_atividade_candidates = [valor for valor in [fornecedor.data_cadastro, ultima_doc] if valor]
     ultima_atividade = max(
-        [valor for valor in [fornecedor.data_cadastro, ultima_doc] if valor],
+        ultima_atividade_candidates,
         default=None,
     )
     return {
@@ -1306,6 +1370,7 @@ def _montar_registro_admin(fornecedor, df_homologados, df_controle):
         "nota_iqf_media": media_iqf_controle,
         "total_notas_iqf": total_notas_controle,
         "observacoes": observacoes_lista,
+        "decisao_admin": decisao_payload,
         "documentos": documentos,
         "total_documentos": len(documentos),
         "ultima_atividade": ultima_atividade.isoformat() if ultima_atividade else None,
@@ -1314,6 +1379,19 @@ def _montar_registro_admin(fornecedor, df_homologados, df_controle):
         ),
     }
 
+def _serializar_decisao(decisao: DecisaoFornecedor | None):
+    if not decisao:
+        return None
+    return {
+        "status": decisao.status,
+        "notaReferencia": decisao.nota_referencia,
+        "observacao": decisao.observacao or "",
+        "avaliador": decisao.avaliador_email,
+        "atualizadoEm": decisao.atualizado_em.isoformat() if decisao.atualizado_em else None,
+        "emailEnviadoEm": decisao.email_enviado_em.isoformat() if decisao.email_enviado_em else None,
+    }
+
+"""Busca os e-mails válidos para acesso a página de admin"""
 
 def _admin_usuario_autorizado():
     identidade = get_jwt_identity()
@@ -1328,6 +1406,7 @@ def _admin_usuario_autorizado():
         return False
     return True
 
+"""API de acesso a tela de Login de Admin"""
 
 @app.route("/api/admin/login", methods=["POST"])
 def admin_login():
@@ -1345,6 +1424,7 @@ def admin_login():
         print(f"Erro no login admin: {exc}")
         return jsonify(message="Erro ao autenticar administrador"), 500
 
+"""Gráficos de totalização dos fornecedores"""
 
 @app.route("/api/admin/dashboard", methods=["GET"])
 @jwt_required()
@@ -1375,6 +1455,9 @@ def painel_admin_dashboard():
     except Exception as exc:
         print(f"Erro no dashboard admin: {exc}")
         return jsonify(message="Erro ao gerar dashboard administrativo"), 500
+    
+
+"""Acesso apenas para os administradores, buscando pelos dados cadastrados dos fornecedores."""
 
 
 @app.route("/api/admin/fornecedores", methods=["GET"])
@@ -1403,6 +1486,72 @@ def painel_admin_fornecedores():
         print(f"Erro ao listar fornecedores admin: {exc}")
         return jsonify(message="Erro ao listar fornecedores"), 500
 
+
+@app.route("/api/admin/fornecedores/<int:fornecedor_id>/decisao", methods=["POST"])
+@jwt_required()
+def painel_admin_definir_decisao(fornecedor_id: int):
+    if not _admin_usuario_autorizado():
+        return jsonify(message="Acesso nao autorizado."), 403
+    data = request.get_json() or {}
+    status = (data.get("status") or "").strip().upper()
+    if status not in {"APROVADO", "REPROVADO"}:
+        return jsonify(message="Status invalido. Utilize 'APROVADO' ou 'REPROVADO'."), 400
+    nota_referencia = _to_float(data.get("notaReferencia"))
+    observacao = (data.get("observacao") or "").strip()
+    enviar_email_flag = bool(data.get("enviarEmail"))
+
+    fornecedor = Fornecedor.query.get(fornecedor_id)
+    if not fornecedor:
+        return jsonify(message="Fornecedor nao encontrado."), 404
+
+    decisao = DecisaoFornecedor.query.filter_by(fornecedor_id=fornecedor_id).first()
+    if decisao is None:
+        decisao = DecisaoFornecedor(
+            fornecedor_id=fornecedor_id,
+            status=status,
+            nota_referencia=nota_referencia,
+            observacao=observacao,
+        )
+        db.session.add(decisao)
+    else:
+        decisao.status = status
+        decisao.nota_referencia = nota_referencia
+        decisao.observacao = observacao
+    decisao.avaliador_email = (get_jwt_identity() or "").strip()
+    decisao.atualizado_em = datetime.utcnow()
+
+    email_enviado = None
+    if enviar_email_flag:
+        email_enviado = _enviar_email_decisao_fornecedor(fornecedor, decisao)
+        if email_enviado:
+            decisao.email_enviado_em = datetime.utcnow()
+
+    try:
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        print(f"Erro ao registrar decisao admin: {exc}")
+        return jsonify(message="Erro ao salvar a decisao do fornecedor."), 500
+
+    df_homologados = df_controle = None
+    try:
+        df_homologados, df_controle = _carregar_planilhas_homologacao()
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        print(f"Erro ao carregar planilhas para decisao: {exc}")
+
+    info = _montar_registro_admin(fornecedor, df_homologados, df_controle)
+    resposta = {
+        "decisao": _serializar_decisao(decisao),
+        "fornecedor": info,
+    }
+    if email_enviado is not None:
+        resposta["emailEnviado"] = bool(email_enviado)
+    return jsonify(resposta), 200
+
+
+"""Tela de notificação em tempo real"""
 
 @app.route("/api/admin/notificacoes", methods=["GET"])
 @jwt_required()
@@ -1458,6 +1607,22 @@ def painel_admin_notificacoes():
         print(f"Erro ao obter notificações admin: {exc}")
         return jsonify(message="Erro ao listar notificações"), 500
 
+@app.route("/api/admin/documentos/<int:documento_id>/download", methods=["GET"])
+@jwt_required()
+def painel_admin_download_documento(documento_id: int):
+    if not _admin_usuario_autorizado():
+        return jsonify(message="Acesso nao autorizado."), 403
+    documento = Documento.query.get(documento_id)
+    if not documento:
+        return jsonify(message="Documento nao encontrado."), 404
+    pasta_fornecedor = os.path.join(app.config["UPLOAD_FOLDER"], str(documento.fornecedor_id))
+    caminho_arquivo = os.path.join(pasta_fornecedor, documento.nome_documento)
+    if not os.path.exists(caminho_arquivo):
+        return jsonify(message="Arquivo nao encontrado no servidor."), 404
+    return send_from_directory(pasta_fornecedor, documento.nome_documento, as_attachment=True)
+
+
+"""Busca os fornecedores com a rota do CNPJ e Nome nas planilhas"""
 
 @app.route("/api/fornecedores", methods=["GET"])
 def listar_fornecedores():
@@ -1796,9 +1961,107 @@ def enviar_email(destinatario, assunto, corpo, imagem_path):
         return False
 
 
+def _enviar_email_decisao_fornecedor(fornecedor: Fornecedor, decisao: DecisaoFornecedor):
+    status_legivel = "Aprovado" if decisao.status == "APROVADO" else "Reprovado"
+    cor_status = "#10b981" if decisao.status == "APROVADO" else "#ef4444"
+    observacao = decisao.observacao or "Em caso de duvidas, entre em contato com o time Engeman."
+    corpo = f"""
+    <!DOCTYPE html>
+    <html lang="pt-BR">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>Decisao de Homologacao</title>
+        <style>
+            body {{
+                font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+                background-color: #f1f5f9;
+                padding: 32px;
+                color: #0f172a;
+            }}
+            .wrapper {{
+                max-width: 640px;
+                margin: 0 auto;
+                background: #ffffff;
+                border-radius: 18px;
+                overflow: hidden;
+                box-shadow: 0 18px 40px -15px rgba(15, 23, 42, 0.25);
+            }}
+            .header {{
+                padding: 32px;
+                background: linear-gradient(135deg, #f97316 0%, #ef4444 100%);
+                color: #fff;
+            }}
+            .content {{
+                padding: 32px;
+            }}
+            .status-pill {{
+                display: inline-flex;
+                padding: 6px 18px;
+                border-radius: 999px;
+                font-size: 13px;
+                font-weight: 600;
+                background: {cor_status}1a;
+                color: {cor_status};
+                border: 1px solid {cor_status}33;
+                margin: 16px 0;
+            }}
+            .card {{
+                border: 1px solid #e2e8f0;
+                border-radius: 14px;
+                padding: 18px 20px;
+                margin-top: 18px;
+                background: #fbfbfb;
+            }}
+            .footer {{
+                padding: 20px 32px 32px;
+                font-size: 12px;
+                color: #64748b;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="wrapper">
+            <div class="header">
+                <h1>Portal de Fornecedores Engeman</h1>
+                <p>Decisao sobre o processo de homologacao</p>
+            </div>
+            <div class="content">
+                <p>Ola, <strong>{fornecedor.nome}</strong>.</p>
+                <span class="status-pill">Status: {status_legivel}</span>
+                <p>
+                    Suas documentacoes foram analisadas pela equipe Engeman e o processo de homologacao foi
+                    finalizado com o status <strong>{status_legivel.upper()}</strong>.
+                </p>
+                <div class="card">
+                    <p><strong>Resumo</strong></p>
+                    <ul style="margin: 12px 0 0 18px; padding: 0; color: #475569;">
+                        <li><strong>Nota de referencia:</strong> {decisao.nota_referencia if decisao.nota_referencia is not None else 'Nao informada'}</li>
+                        <li><strong>Observacoes:</strong> {observacao}</li>
+                    </ul>
+                </div>
+                <p style="margin-top: 20px;">
+                    Caso necessite de alguma revisao ou queira enviar novos documentos, acesse o portal de fornecedores Engeman.
+                </p>
+            </div>
+            <div class="footer">
+                <p>
+                    Esta e uma comunicacao automatica do Portal de Fornecedores Engeman. Nao responda este e-mail.
+                </p>
+            </div>
+        </div>
+    </body>
+    </html>
+    """
+    assunto = f"Portal Engeman - Resultado de homologacao: {status_legivel}"
+    imagem_path = _resolve_static_file("colorida.png")
+    return enviar_email(fornecedor.email, assunto, corpo, imagem_path)
+
+
 def gerar_token_recuperacao():
     return random.randint(100000, 999999)
 
 
 if __name__ == "__main__":
-    app.run(debug=True)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False, use_reloader=False)

@@ -1487,6 +1487,7 @@ def painel_admin_fornecedores():
         print(f"Erro ao listar fornecedores admin: {exc}")
         return jsonify(message="Erro ao listar fornecedores"), 500
 
+"""Acesso a aprovação e reprovação do fornecedor pela página de admin"""
 
 @app.route("/api/admin/fornecedores/<int:fornecedor_id>/decisao", methods=["POST"])
 @jwt_required()
@@ -1607,6 +1608,8 @@ def painel_admin_notificacoes():
     except Exception as exc:
         print(f"Erro ao obter notificações admin: {exc}")
         return jsonify(message="Erro ao listar notificações"), 500
+    
+"""API feita para disponibilizar os downloads dos documentos pela página de admin"""
 
 @app.route("/api/admin/documentos/<int:documento_id>/download", methods=["GET"])
 @jwt_required()
@@ -1639,6 +1642,9 @@ def listar_fornecedores():
         for f in fornecedores
     ]
     return jsonify(lista)
+
+
+"""Função que envia os documentos dos fornecedores em anexo para o e-mail"""
 
 
 def enviar_email_documento(
@@ -1961,6 +1967,7 @@ def enviar_email(destinatario, assunto, corpo, imagem_path):
         print(f"Erro ao enviar e-mail: {e}")
         return False
 
+"""Função para disparar o e-mail automático. Respondendo ao fornecedor se ele foi aprovado ou reprovado"""
 
 def _enviar_email_decisao_fornecedor(fornecedor: Fornecedor, decisao: DecisaoFornecedor):
     status_legivel = "Aprovado" if decisao.status == "APROVADO" else "Reprovado"
@@ -2058,7 +2065,7 @@ def _enviar_email_decisao_fornecedor(fornecedor: Fornecedor, decisao: DecisaoFor
     imagem_path = _resolve_static_file("colorida.png")
     return enviar_email(fornecedor.email, assunto, corpo, imagem_path)
 
-
+"""Função que gera o token de recuperação de senha, sendo expirado em 10minutos após envio"""
 def gerar_token_recuperacao():
     return random.randint(100000, 999999)
 

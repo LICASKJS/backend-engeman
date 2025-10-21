@@ -52,8 +52,8 @@ def _build_allowed_cors_origins():
     default_origins = [
         "http://localhost:3000",
         "http://127.0.0.1:3000",
-        "https://portalengeman-front.vercel.app",
-        "https://portalfornecedor-engeman.vercel.app",
+        "https://portalengeman.vercel.app",
+        
     ]
     env_origins = os.environ.get("ALLOWED_CORS_ORIGINS", "")
     if env_origins:

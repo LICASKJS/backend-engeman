@@ -3,9 +3,7 @@ import os
 class Config:
     SECRET_KEY = os.environ.get('SECRET_KEY', 'secret-key-here')
 
-    _database_url = os.environ.get('DATABASE_URL', 'sqlite:///fornecedores.db')
-    if _database_url.startswith('postgres://'):
-        _database_url = _database_url.replace('postgres://', 'postgresql+psycopg2://', 1)
+    _database_url = 'postgresql+psycopg2://postgres:engeman2025@localhost:5432/fornecedores'
     SQLALCHEMY_DATABASE_URI = _database_url
     SQLALCHEMY_TRACK_MODIFICATIONS = False
 

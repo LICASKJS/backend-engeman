@@ -1,5 +1,4 @@
 from flask import Flask, request, jsonify, send_from_directory
-from flask_sqlalchemy import SQLAlchemy
 from flask_jwt_extended import (
     JWTManager,
     create_access_token,
@@ -15,15 +14,21 @@ import random
 import base64
 import os
 import pandas as pd
+import re
 import unicodedata
 from flask_cors import CORS
 from datetime import datetime, timedelta
 from werkzeug.utils import secure_filename
 from flask_migrate import Migrate
-from sqlalchemy import or_
+from sqlalchemy import or_, select
+from sqlalchemy.orm import selectinload
+
 
 mail = Mail()
 app = Flask(__name__)
+
+
+
 
 UPLOAD_FOLDER = os.path.join(os.path.abspath(os.path.dirname(__file__)), "uploads")
 ALLOWED_EXTENSIONS = {"pdf", "png", "jpg", "jpeg", "docx", "xlsx"}
@@ -75,6 +80,9 @@ def _build_allowed_cors_origins():
 
 
 ALLOWED_CORS_ORIGINS, _ALLOWED_CORS_LOOKUP = _build_allowed_cors_origins()
+
+"""Aceita todas as credências, 
+deixando autorização para acesso as páginas do portal."""
 
 
 def _apply_cors_headers(response):
@@ -187,6 +195,7 @@ def _add_api_cors_headers(response):
 
 app.config.from_object(Config)
 db.init_app(app)
+
 
 jwt = JWTManager(app)
 mail.init_app(app)
@@ -621,7 +630,7 @@ def contato():
 
         imagem_path = _resolve_static_file("colorida.png")
         email_enviado = enviar_email(
-            destinatario="lucas.mateus@engeman.net",
+            destinatario="suprimentos.matriz@engeman.net",
             assunto=f"MENSAGEM DO PORTAL: {assunto}",
             corpo=corpo_email,
             imagem_path=imagem_path,
@@ -724,7 +733,7 @@ def documentos_necessarios():
     try:
         data = request.get_json()
         categoria = data.get("categoria")
-        if not categoria:
+        if not categoria or not str(categoria).strip():
             return jsonify(message="Categoria não fornecida"), 400
         candidatos_arquivo = ("CLAF.xlsx", "claf.xlsx")
         claf_path = _resolve_static_file(*candidatos_arquivo)
@@ -744,13 +753,27 @@ def documentos_necessarios():
         df.columns = df.columns.str.strip().str.replace("\n", "").str.replace("\r", "")
         if "MATERIAL" not in df.columns:
             return jsonify(message="Coluna 'MATERIAL' não encontrada na planilha"), 500
+
+        material_series = df["MATERIAL"].fillna("").astype(str)
+        categoria_busca = str(categoria).strip()
         df_filtrado = df[
-            df["MATERIAL"].str.upper().str.contains(categoria.upper().strip(), na=False)
+            material_series.str.contains(
+                categoria_busca, case=False, na=False, regex=False
+            )
         ]
+
         documentos = []
-        for _, row in df_filtrado.iterrows():
-            if "REQUISITOS LEGAIS" in df.columns and pd.notna(row["REQUISITOS LEGAIS"]):
-                documentos.append(row["REQUISITOS LEGAIS"])
+        if "REQUISITOS LEGAIS" in df.columns:
+            for _, row in df_filtrado.iterrows():
+                valor_bruto = row["REQUISITOS LEGAIS"]
+                if pd.isna(valor_bruto):
+                    continue
+                for item in (
+                    str(valor_bruto).replace("\r\n", "\n").replace("\r", "\n").split("\n")
+                ):
+                    item_limpo = item.strip()
+                    if item_limpo and item_limpo not in documentos:
+                        documentos.append(item_limpo)
         return jsonify(documentos=documentos), 200
     except Exception as e:
         return jsonify(message="Erro ao consultar documentos: " + str(e)), 500
@@ -800,10 +823,22 @@ def portal_resumo():
             fornecedor_id = int(identidade) if identidade is not None else None
         except (TypeError, ValueError):
             return jsonify(message="Token inválido: identidade não é numérica."), 422
-
-        fornecedor = Fornecedor.query.get(fornecedor_id) if fornecedor_id else None
+        
+        if not fornecedor_id:
+            return jsonify(message="Token inválido: Identidade ausente."), 422
+        
+        stmt = (
+            select(Fornecedor)
+            .options(
+                selectinload(Fornecedor.documentos),
+                selectinload(Fornecedor.decisao_admin),
+                selectinload(Fornecedor.dados_homologacao),
+            )
+            .filter_by(id=fornecedor_id)
+        )
+        fornecedor = db.session.execute(stmt).scalar_one_or_none()
         if not fornecedor:
-            return jsonify(message="Fornecedor não encontrado."), 404
+            return jsonify(message="Fornecedor não encontrado"), 404
 
         media_iqf = 0.0
         media_homologacao = 0.0
@@ -814,20 +849,45 @@ def portal_resumo():
         ultima_atividade = None
         decisao_info = None
 
+        df_homologados = df_controle = None
         try:
             df_homologados, df_controle = _carregar_planilhas_homologacao()
-            info = _montar_registro_admin(fornecedor, df_homologados, df_controle)
         except FileNotFoundError:
-            info = {}
+            app.logger.warning(
+                "Planilhas de homologacao nao encontradas ao montar resumo do portal."
+            )
+        except Exception as exc:
+            app.logger.error("Erro ao carregar planilhas de homologacao: %s", exc)
+
+        try:
+            info = _montar_registro_admin(fornecedor, df_homologados, df_controle)
         except Exception as exc:
             app.logger.error("Erro ao montar resumo do portal: %s", exc)
             info = {}
 
         if info:
             media_iqf = (
-                _to_float(info.get("nota_iqf") or info.get("nota_iqf_planilha")) or 0.0
+                _primeiro_valor_float(
+                    info.get("mediaIQF"),
+                    info.get("media_iqf"),
+                    info.get("nota_iqf_media"),
+                    info.get("nota_iqf"),
+                    info.get("nota_iqf_planilha"),
+                    info.get("iqf"),
+                )
+                or 0.0
             )
-            media_homologacao = _to_float(info.get("nota_homologacao")) or 0.0
+            media_homologacao = (
+                _primeiro_valor_float(
+                    info.get("mediaHomologacao"),
+                    info.get("media_homologacao"),
+                    info.get("nota homologacao"),
+                    info.get("nota_homologacao"),
+                    info.get("homologacao"),
+                    info.get("notaHomologacao"),
+                )
+                or 0.0
+            )
             status_final = info.get("status") or status_final
             observacoes = info.get("observacoes") or []
             observacao_resumo = "; ".join(observacoes) if observacoes else ""
@@ -932,7 +992,7 @@ def consultar_dados_homologacao():
             )
         path_homologados = _resolve_static_file("fornecedores_homologados.xlsx")
         path_controle = _resolve_static_file(
-            "atendimento controle_qualidade.xlsx", "atendimento_controle_qualidade.xlsx"
+            "atendimento controle_qualidade.xlsx", "atendimento controle_qualidade.xlsx"
         )
         print(f"Caminho do arquivo de homologados: {path_homologados}")
         print(f"Caminho do arquivo de controle de qualidade: {path_controle}")
@@ -960,29 +1020,43 @@ def consultar_dados_homologacao():
         df_homologacao.columns = (
             df_homologacao.columns.str.strip().str.lower().str.replace(" ", "_")
         )
+
         df_controle_qualidade.columns = (
             df_controle_qualidade.columns.str.strip().str.lower().str.replace(" ", "_")
         )
+
         filtro_homologados = df_homologacao.iloc[0:0]
         nome_normalizado_busca = _normalize_text(fornecedor_nome_busca)
-        colunas_busca = ["agente", "nome_fantasia"]
+        colunas_busca = ["agente", "nome fantasia"]
+
         for coluna in colunas_busca:
+
             if not nome_normalizado_busca or coluna not in df_homologacao.columns:
+
                 continue
+
             normalizados = (
                 df_homologacao[coluna].fillna("").astype(str).apply(_normalize_text)
             )
+
             correspondencia_exata = df_homologacao[
                 normalizados == nome_normalizado_busca
             ]
+
             if not correspondencia_exata.empty:
+
                 filtro_homologados = correspondencia_exata
+
                 break
             correspondencia_parcial = df_homologacao[
+
                 normalizados.str.contains(nome_normalizado_busca, na=False, regex=False)
             ]
+
             if not correspondencia_parcial.empty:
+
                 filtro_homologados = correspondencia_parcial
+                
                 break
         if (
             filtro_homologados.empty
@@ -1015,10 +1089,10 @@ def consultar_dados_homologacao():
             ]
         if (
             not filtro_homologados.empty
-            and "data_vencimento" in filtro_homologados.columns
+            and "data vencimento" in filtro_homologados.columns
         ):
             filtro_homologados = filtro_homologados.sort_values(
-                by="data_vencimento", ascending=False, na_position="last"
+                by="data vencimento", ascending=False, na_position="last"
             )
         if filtro_homologados.empty:
             return (
@@ -1027,16 +1101,18 @@ def consultar_dados_homologacao():
                 ),
                 404,
             )
+        
         fornecedor_h = filtro_homologados.iloc[0]
         print(f"Fornecedor encontrado: {fornecedor_h}")
         fornecedor_id_raw = fornecedor_h.get("codigo")
         fornecedor_id = int(fornecedor_id_raw) if pd.notna(fornecedor_id_raw) else None
-        nota_homologacao_raw = fornecedor_h.get("nota_homologacao")
+        nota_homologacao_raw = fornecedor_h.get("nota homologacao")
         nota_homologacao = (
             float(nota_homologacao_raw)
             if nota_homologacao_raw is not None and not pd.isna(nota_homologacao_raw)
             else None
         )
+
         iqf_raw = fornecedor_h.get("iqf")
         iqf = float(iqf_raw) if iqf_raw is not None and not pd.isna(iqf_raw) else None
         aprovado_raw = fornecedor_h.get("aprovado")
@@ -1046,6 +1122,7 @@ def consultar_dados_homologacao():
         status_homologacao = (
             "APROVADO" if aprovado_valor.upper() == "S" else "EM_ANALISE"
         )
+
         filtro_ocorrencias = df_controle_qualidade.iloc[0:0]
         if "nome_agente" in df_controle_qualidade.columns:
             normalizados_ocorrencias = (
@@ -1054,11 +1131,13 @@ def consultar_dados_homologacao():
                 .astype(str)
                 .apply(_normalize_text)
             )
+
             agente_planilha_normalizado = _normalize_text(fornecedor_h.get("agente"))
             if agente_planilha_normalizado:
                 filtro_ocorrencias = df_controle_qualidade[
                     normalizados_ocorrencias == agente_planilha_normalizado
                 ]
+                
             if filtro_ocorrencias.empty and nome_normalizado_busca:
                 filtro_ocorrencias = df_controle_qualidade[
                     normalizados_ocorrencias.str.contains(
@@ -1091,6 +1170,8 @@ def consultar_dados_homologacao():
         observacoes_lista = []
 
         observacao_resumo = ""
+
+        """Condição que remove feedbacks que tem comentários pela base costando ""Sem comentários"""
 
         if "observacao" in filtro_ocorrencias.columns:
             observacoes_series = (
@@ -1208,12 +1289,58 @@ def _carregar_planilhas_homologacao():
 """Converte o valor float"""
 
 def _to_float(value):
-    try:
-        if value in (None, "", "nan"):
+    if value is None:
+        return None
+
+    
+    if isinstance(value, (int, float)):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
             return None
+
+    if isinstance(value, str):
+        trimmed = value.strip()
+        if not trimmed or trimmed.lower() == "nan":
+            return None
+
+        numeric_symbols = re.sub(r"[^0-9,.\-]", "", trimmed)
+        if not numeric_symbols:
+            return None
+
+        last_comma = numeric_symbols.rfind(",")
+        last_dot = numeric_symbols.rfind(".")
+        normalized = numeric_symbols
+
+        if last_comma > -1 and last_dot > -1:
+            if last_comma > last_dot:
+                normalized = numeric_symbols.replace(".", "").replace(",", ".")
+            else:
+                normalized = numeric_symbols.replace(",", "")
+        elif last_comma > -1:
+            normalized = numeric_symbols.replace(".", "").replace(",", ".")
+        elif last_dot > -1:
+            parts = numeric_symbols.split(".")
+            decimal = parts.pop()
+            normalized = f"{''.join(parts)}.{decimal}"
+
+        try:
+            return float(normalized)
+        except ValueError:
+            return None
+
+    try:
         return float(value)
     except (TypeError, ValueError):
         return None
+
+
+def _primeiro_valor_float(*candidatos):
+    for candidato in candidatos:
+        valor = _to_float(candidato)
+        if valor is not None:
+            return valor
+    return None
 
 
 """Calcula a média total IQF"""
@@ -1257,7 +1384,8 @@ def _calcular_media_iqf_controle(
         observacoes = subset["observacao"].dropna().astype(str).tolist()
     return media, total, observacoes
 
-"""#Mostra o Status final#"""
+"""Mostra o Status final após as avaliações"""
+
 def _determinar_status_final(
     aprovado_valor, nota_homologacao, iqf_calculada, nota_iqf_planilha
 ):
@@ -1272,7 +1400,7 @@ def _determinar_status_final(
         return "APROVADO"
     return "A CADASTRAR"
 
-"""#Confere os dados na tela principal de admin#"""
+"""Confere os dados na tela principal de admin"""
 
 def _montar_registro_admin(fornecedor, df_homologados, df_controle):
 
@@ -1282,6 +1410,16 @@ def _montar_registro_admin(fornecedor, df_homologados, df_controle):
     fornecedor_nome_planilha = fornecedor.nome
     aprovado_valor = ""
     registros_compativeis = pd.DataFrame()
+    homologacao_db = None
+
+    homologacoes_relacionadas = list(
+        getattr(fornecedor, "dados_homologacao", []) or []
+    )
+    if homologacoes_relacionadas:
+        homologacao_db = max(
+            homologacoes_relacionadas,
+            key=lambda registro: registro.id or 0,
+        )
 
     if df_homologados is not None and not df_homologados.empty:
         candidatos = []
@@ -1306,24 +1444,69 @@ def _montar_registro_admin(fornecedor, df_homologados, df_controle):
                 == fornecedor.cnpj.strip()
             ]
     if not registros_compativeis.empty:
+
         registro = registros_compativeis.iloc[0]
+
         fornecedor_nome_planilha = str(registro.get("agente", fornecedor.nome))
+
         aprovado_valor = str(registro.get("aprovado", "")).strip().upper()
-        nota_homologacao = _to_float(registro.get("nota_homologacao"))
-        nota_iqf_planilha = _to_float(registro.get("iqf"))
+
+        nota_homologacao = _to_float(
+            registro.get("nota_homologacao") or registro.get("nota homologacao")
+        )
+
+        nota_iqf_planilha = _to_float(
+            registro.get("nota_iqf") or registro.get("iqf")
+        )
+
     media_iqf_controle, total_notas_controle, observacoes_lista = (
+
         _calcular_media_iqf_controle(
+
             fornecedor_nome_planilha, fornecedor.nome, df_controle
         )
     )
+
+    if homologacao_db:
+        nota_homologacao_db = _to_float(getattr(homologacao_db, "homologacao", None))
+        iqf_db_valor = _to_float(getattr(homologacao_db, "iqf", None))
+
+        if nota_homologacao is None and nota_homologacao_db is not None:
+            nota_homologacao = nota_homologacao_db
+        if nota_homologacao is None and iqf_db_valor is not None:
+            nota_homologacao = iqf_db_valor
+        if nota_iqf_planilha is None and iqf_db_valor is not None:
+            nota_iqf_planilha = iqf_db_valor
+        if media_iqf_controle is None and iqf_db_valor is not None:
+            media_iqf_controle = iqf_db_valor
+        if not aprovado_valor:
+            homologacao_texto = (getattr(homologacao_db, "homologacao", "") or "").strip()
+            homologacao_upper = homologacao_texto.upper()
+            if homologacao_upper in {"APROVADO", "REPROVADO"}:
+                aprovado_valor = "S" if homologacao_upper == "APROVADO" else "N"
+        if not observacoes_lista:
+            observacoes_brutas = getattr(homologacao_db, "observacoes", "")
+            if observacoes_brutas:
+                observacoes_lista = [
+                    item.strip()
+                    for item in re.split(r"[;\n\r]", observacoes_brutas)
+                    if item and item.strip()
+                ]
+                total_notas_controle = max(total_notas_controle, len(observacoes_lista))
+
+
     iqf_final = (
         media_iqf_controle if media_iqf_controle is not None else nota_iqf_planilha
     )
+
     status_final = _determinar_status_final(
         aprovado_valor, nota_homologacao, iqf_final, nota_iqf_planilha
     )
+
     decisao_payload = None
+
     decisao = getattr(fornecedor, "decisao_admin", None)
+
     if decisao:
         status_final = (decisao.status or status_final or "").strip().upper() or status_final
         decisao_payload = {
@@ -1345,18 +1528,29 @@ def _montar_registro_admin(fornecedor, df_homologados, df_controle):
         }
         for doc in fornecedor.documentos
     ]
+
     ultima_doc = max(
+
         [doc.data_upload for doc in fornecedor.documentos if doc.data_upload],
         default=None,
+
     )
+
     if decisao and decisao.atualizado_em:
+
         ultima_atividade_candidates = [valor for valor in [fornecedor.data_cadastro, ultima_doc, decisao.atualizado_em] if valor]
+
     else:
+
         ultima_atividade_candidates = [valor for valor in [fornecedor.data_cadastro, ultima_doc] if valor]
+
     ultima_atividade = max(
+
         ultima_atividade_candidates,
+
         default=None,
     )
+
     return {
         "id": fornecedor.id,
         "nome": fornecedor.nome,
@@ -1365,6 +1559,7 @@ def _montar_registro_admin(fornecedor, df_homologados, df_controle):
         "categoria": fornecedor.categoria,
         "status": status_final,
         "aprovado": status_final == "APROVADO",
+        "nota homologacao": nota_homologacao,
         "nota_homologacao": nota_homologacao,
         "nota_iqf": iqf_final,
         "nota_iqf_planilha": nota_iqf_planilha,
@@ -1395,16 +1590,27 @@ def _serializar_decisao(decisao: DecisaoFornecedor | None):
 """Busca os e-mails válidos para acesso a página de admin"""
 
 def _admin_usuario_autorizado():
+
     identidade = get_jwt_identity()
+
     claims = get_jwt()
+
     if identidade is None:
+
         return False
+    
     email = (identidade or "").strip().lower()
+
     if email not in ADMIN_ALLOWED_EMAILS:
+
         return False
+    
     role = claims.get("role") if isinstance(claims, dict) else None
+
     if role is not None and role != "admin":
+
         return False
+    
     return True
 
 """API de acesso a tela de Login de Admin"""
@@ -1428,19 +1634,28 @@ def admin_login():
 """Gráficos de totalização dos fornecedores"""
 
 @app.route("/api/admin/dashboard", methods=["GET"])
+
 @jwt_required()
+
 def painel_admin_dashboard():
+
     if not _admin_usuario_autorizado():
+
         return jsonify(message="Acesso nao autorizado."), 403
+    
     try:
         fornecedores_db = Fornecedor.query.all()
         total_cadastrados = len(fornecedores_db)
         total_documentos = Documento.query.count()
         df_homologados, df_controle = _carregar_planilhas_homologacao()
         status_counts = {"APROVADO": 0, "REPROVADO": 0, "EM_ANALISE": 0}
+
         for fornecedor in fornecedores_db:
+
             info = _montar_registro_admin(fornecedor, df_homologados, df_controle)
+
             status_counts[info["status"]] = status_counts.get(info["status"], 0) + 1
+
         return (
             jsonify(
                 total_cadastrados=total_cadastrados,
@@ -1451,14 +1666,20 @@ def painel_admin_dashboard():
             ),
             200,
         )
+    
     except FileNotFoundError as e:
+
         return jsonify(message=str(e)), 500
+    
     except Exception as exc:
+
         print(f"Erro no dashboard admin: {exc}")
+        
         return jsonify(message="Erro ao gerar dashboard administrativo"), 500
     
 
-"""Acesso apenas para os administradores, buscando pelos dados cadastrados dos fornecedores."""
+"""Acesso apenas para os administradores,
+ buscando pelos dados cadastrados dos fornecedores."""
 
 
 @app.route("/api/admin/fornecedores", methods=["GET"])
@@ -1551,6 +1772,74 @@ def painel_admin_definir_decisao(fornecedor_id: int):
     if email_enviado is not None:
         resposta["emailEnviado"] = bool(email_enviado)
     return jsonify(resposta), 200
+
+
+@app.route("/api/admin/fornecedores/<int:fornecedor_id>/notas", methods=["PATCH"])
+@jwt_required()
+def painel_admin_atualizar_notas(fornecedor_id: int):
+    if not _admin_usuario_autorizado():
+        return jsonify(message="Acesso nao autorizado."), 403
+
+    data = request.get_json() or {}
+    nota_iqf = _to_float(data.get("notaIQF") or data.get("nota_iqf"))
+    nota_homologacao = _to_float(
+        data.get("notaHomologacao") or data.get("nota_homologacao")
+    )
+    observacoes = data.get("observacoes")
+    if (
+        nota_iqf is None
+        and nota_homologacao is None
+        and (observacoes is None or not str(observacoes).strip())
+    ):
+        return jsonify(message="Informe ao menos uma nota para atualizar."), 400
+
+    fornecedor = Fornecedor.query.get(fornecedor_id)
+    if not fornecedor:
+        return jsonify(message="Fornecedor nao encontrado."), 404
+
+    homologacao = (
+        Homologacao.query.filter_by(fornecedor_id=fornecedor_id)
+        .order_by(Homologacao.id.desc())
+        .first()
+    )
+
+    if homologacao is None:
+        homologacao = Homologacao(
+            fornecedor_id=fornecedor_id,
+            iqf=nota_iqf if nota_iqf is not None else (nota_homologacao or 0.0),
+            homologacao=str(nota_homologacao) if nota_homologacao is not None else "",
+            observacoes=observacoes if observacoes is not None else None,
+        )
+        db.session.add(homologacao)
+    else:
+        if nota_iqf is not None:
+            homologacao.iqf = nota_iqf
+        if nota_homologacao is not None:
+            homologacao.homologacao = str(nota_homologacao)
+        if observacoes is not None:
+            homologacao.observacoes = observacoes
+
+    try:
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        app.logger.error(
+            "Erro ao atualizar notas do fornecedor %s: %s", fornecedor_id, exc
+        )
+        return jsonify(message="Erro ao salvar as notas do fornecedor."), 500
+
+    df_homologados = df_controle = None
+    try:
+        df_homologados, df_controle = _carregar_planilhas_homologacao()
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        app.logger.error(
+            "Erro ao carregar planilhas apos atualizar notas: %s", exc
+        )
+
+    info = _montar_registro_admin(fornecedor, df_homologados, df_controle)
+    return jsonify(fornecedor=info), 200
 
 
 """Tela de notificação em tempo real"""

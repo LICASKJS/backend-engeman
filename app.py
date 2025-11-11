@@ -3,18 +3,19 @@ from flask_sqlalchemy import SQLAlchemy
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, get_jwt
 from flask_mail import Mail, Message
 from config import Config
-from models import db, Fornecedor, Documento, Homologacao
+from models import db, Fornecedor, Documento, Homologacao, NotaFornecedor
 from werkzeug.security import generate_password_hash, check_password_hash
 import random
 import base64
 import os
 import pandas as pd
+import math
 import unicodedata
 from flask_cors import CORS
 from datetime import datetime, timedelta
 from werkzeug.utils import secure_filename
 from flask_migrate import Migrate
-from sqlalchemy import or_
+from sqlalchemy import or_, inspect, text
 
 mail = Mail()
 app = Flask(__name__)
@@ -31,7 +32,13 @@ ADMIN_ALLOWED_EMAILS = {
 }
 
 ADMIN_PASSWORD = 'admin123'
-CORS(app, resources={r"/api/*": {"origins": ["http://localhost:3000", "http://127.0.0.1:3000", "https://portalengeman-front.vercel.app"]}})
+ALLOWED_CORS_ORIGINS = [
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "https://portalengeman-front.vercel.app",
+    "https://portalengeman.vercel.app",
+]
+CORS(app, resources={r"/api/*": {"origins": ALLOWED_CORS_ORIGINS}})
 app.config.from_object(Config)
 db.init_app(app)
 
@@ -39,8 +46,42 @@ jwt = JWTManager(app)
 mail.init_app(app)
 migrate = Migrate(app, db)
 
+def _ensure_nota_fornecedor_schema():
+    try:
+        inspector = inspect(db.engine)
+    except Exception as exc:
+        print(f'Nao foi possivel inspecionar o banco para atualizar notas_fornecedores: {exc}')
+        return
+    if 'notas_fornecedores' not in inspector.get_table_names():
+        return
+    existing_columns = {col['name'] for col in inspector.get_columns('notas_fornecedores')}
+    alter_statements = []
+
+    def schedule(column_name, ddl):
+        if column_name not in existing_columns:
+            alter_statements.append((column_name, ddl))
+
+    schedule('status_decisao', 'VARCHAR(20)')
+    schedule('observacao_admin', 'TEXT')
+    schedule('nota_referencia', 'FLOAT')
+    schedule('email_enviado', 'INTEGER DEFAULT 0')
+    schedule('decisao_atualizada_em', 'DATETIME')
+
+    if not alter_statements:
+        return
+
+    try:
+        with db.engine.begin() as connection:
+            for column_name, ddl in alter_statements:
+                connection.execute(text(f'ALTER TABLE notas_fornecedores ADD COLUMN {column_name} {ddl}'))
+                print(f'Coluna {column_name} adicionada a notas_fornecedores')
+    except Exception as exc:
+        print(f'Erro ao ajustar schema de notas_fornecedores: {exc}')
+
+
 with app.app_context():
     db.create_all()
+    _ensure_nota_fornecedor_schema()
 
     
 @app.route('/')
@@ -51,7 +92,7 @@ def home():
 @app.route('/api/cadastro', methods=['POST'])
 def cadastrar_fornecedor():
     try:
-        data = request.get_json()
+        data = request.get_json() or {}
         print(data)
         if not all(key in data for key in ('email', 'cnpj', 'nome', 'senha')):
             return jsonify(message="Dados incompletos, verifique os campos."), 400
@@ -82,7 +123,7 @@ def login():
         if fornecedor:
             app.logger.info(f"Fornecedor encontrado: {fornecedor.email}")
             if check_password_hash(fornecedor.senha, senha):
-                access_token = create_access_token(identity=fornecedor.id)
+                access_token = create_access_token(identity=str(fornecedor.id))
                 app.logger.info(f"Token gerado para o fornecedor {fornecedor.email}")
                 return jsonify(access_token=access_token), 200
             else:
@@ -433,6 +474,19 @@ def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in allowed_extensions
 
 
+def _obter_caminho_claf():
+    candidatos = [
+        os.path.join(app.root_path, '..', 'uploads', 'CLAF.xlsx'),
+        os.path.join(app.root_path, '..', 'static', 'CLAF.xlsx'),
+        os.path.join(app.root_path, 'static', 'CLAF.xlsx'),
+    ]
+    for caminho in candidatos:
+        caminho_abs = os.path.abspath(caminho)
+        if os.path.exists(caminho_abs):
+            return caminho_abs
+    raise FileNotFoundError('Planilha CLAF.xlsx nao encontrada.')
+
+
 @app.route('/api/envio-documento', methods=['POST'])
 def enviar_documento():
     try:
@@ -477,31 +531,69 @@ def enviar_documento():
         return jsonify(message="Erro ao enviar documentos: " + str(e)), 500
     
 @app.route('/api/documentos-necessarios', methods=['POST'])
-
 def documentos_necessarios():
-    import pandas as pd
-    import os
     try:
-        data = request.get_json()
-        categoria = data.get('categoria')
+        data = request.get_json() or {}
+        categoria = (data.get('categoria') or '').strip()
         if not categoria:
-            return jsonify(message="Categoria não fornecida"), 400
-        claf_path = os.path.abspath(os.path.join(app.root_path, '..', 'uploads', 'CLAF.xlsx'))
-        if not os.path.exists(claf_path):
-            return jsonify(message="Planilha CLAF não encontrada"), 500
+            return jsonify(message="Categoria nao fornecida"), 400
+        claf_path = _obter_caminho_claf()
         df = pd.read_excel(claf_path, header=0)
-        df.columns = df.columns.str.strip().str.replace('\n', '').str.replace('\r', '')
+        df.columns = (
+            df.columns.str.strip()
+            .str.replace('\n', '', regex=False)
+            .str.replace('\r', '', regex=False)
+        )
         if 'MATERIAL' not in df.columns:
-            return jsonify(message="Coluna 'MATERIAL' não encontrada na planilha"), 500
-        df_filtrado = df[df['MATERIAL'].str.upper().str.contains(categoria.upper().strip(), na=False)]
+            return jsonify(message="Coluna 'MATERIAL' nao encontrada na planilha"), 500
+        df_filtrado = df[
+            df['MATERIAL'].astype(str).str.upper().str.contains(categoria.upper(), na=False)
+        ]
         documentos = []
-        for _, row in df_filtrado.iterrows():
-            if 'REQUISITOS LEGAIS' in df.columns and pd.notna(row['REQUISITOS LEGAIS']):
-                documentos.append(row['REQUISITOS LEGAIS'])
+        if 'REQUISITOS LEGAIS' in df.columns:
+            for _, row in df_filtrado.iterrows():
+                valor = row.get('REQUISITOS LEGAIS')
+                if pd.notna(valor):
+                    documentos.append(str(valor).strip())
         return jsonify(documentos=documentos), 200
+    except FileNotFoundError as exc:
+        return jsonify(message=str(exc)), 500
     except Exception as e:
         return jsonify(message="Erro ao consultar documentos: " + str(e)), 500
-    
+
+
+@app.route('/api/categorias', methods=['GET'])
+def listar_categorias():
+    try:
+        claf_path = _obter_caminho_claf()
+        df = pd.read_excel(claf_path, header=0)
+        df.columns = df.columns.str.strip()
+        lower_map = {col.lower(): col for col in df.columns}
+        coluna_material = None
+        for candidato in ('material', 'materiais', 'categoria', 'grupo', 'familia'):
+            if candidato in lower_map:
+                coluna_material = lower_map[candidato]
+                break
+        if coluna_material is None:
+            return jsonify(message="Coluna de materiais nao encontrada na planilha"), 500
+        serie = df[coluna_material].dropna().astype(str)
+        vistos = set()
+        materiais = []
+        for valor in serie:
+            nome = valor.strip()
+            if not nome:
+                continue
+            chave = nome.lower()
+            if chave in vistos:
+                continue
+            vistos.add(chave)
+            materiais.append(nome)
+        materiais.sort(key=lambda x: x.lower())
+        return jsonify(materiais=materiais, total=len(materiais)), 200
+    except FileNotFoundError as exc:
+        return jsonify(message=str(exc)), 500
+    except Exception as exc:
+        return jsonify(message="Erro ao listar categorias: " + str(exc)), 500
 
 @app.route('/api/dados-homologacao', methods=['GET'])
 def consultar_dados_homologacao():
@@ -625,7 +717,30 @@ def consultar_dados_homologacao():
     except Exception as e:
         print(f"Erro inesperado ao consultar dados de homologação: {str(e)}")
         return jsonify(message="Erro ao consultar dados de homologação", error_details=str(e)), 500
-    
+
+
+@app.route('/api/portal/resumo', methods=['GET'])
+@jwt_required()
+def portal_resumo():
+    identidade = get_jwt_identity()
+    try:
+        fornecedor_id = int(identidade)
+    except (TypeError, ValueError):
+        return jsonify(message="Identidade do fornecedor invalida."), 400
+    fornecedor = Fornecedor.query.get(fornecedor_id)
+    if fornecedor is None:
+        return jsonify(message="Fornecedor nao encontrado."), 404
+    df_homologados = None
+    df_controle = None
+    try:
+        df_homologados, df_controle = _carregar_planilhas_homologacao()
+    except FileNotFoundError as exc:
+        print(f'Planilhas de homologacao nao encontradas para resumo do portal: {exc}')
+    except Exception as exc:
+        print(f'Erro ao carregar planilhas para resumo do portal: {exc}')
+    resumo = _montar_resumo_portal(fornecedor, df_homologados, df_controle)
+    return jsonify(resumo=resumo), 200
+
 def _normalize_text(value):
     if value is None:
         return ''
@@ -696,8 +811,24 @@ def _determinar_status_final(aprovado_valor, nota_homologacao, iqf_calculada, no
     return 'EM_ANALISE'
 
 def _montar_registro_admin(fornecedor, df_homologados, df_controle):
-    status = 'EM_ANALISE'
     nota_homologacao = None
+    nota_manual = getattr(fornecedor, 'nota_admin', None)
+    status_manual = None
+    observacao_admin = None
+    decisao_atualizada_em = None
+    nota_referencia_manual = None
+    if nota_manual:
+        if nota_manual.nota_homologacao is not None:
+            try:
+                nota_homologacao = float(nota_manual.nota_homologacao)
+            except (TypeError, ValueError):
+                nota_homologacao = None
+        status_manual_raw = (nota_manual.status_decisao or '').strip().upper() if nota_manual.status_decisao else ''
+        if status_manual_raw in {'APROVADO', 'REPROVADO', 'EM_ANALISE'}:
+            status_manual = status_manual_raw
+        observacao_admin = nota_manual.observacao_admin
+        nota_referencia_manual = nota_manual.nota_referencia
+        decisao_atualizada_em = nota_manual.decisao_atualizada_em
     nota_iqf_planilha = None
     fornecedor_nome_planilha = fornecedor.nome
     aprovado_valor = ''
@@ -726,13 +857,16 @@ def _montar_registro_admin(fornecedor, df_homologados, df_controle):
         registro = registros_compativeis.iloc[0]
         fornecedor_nome_planilha = str(registro.get('agente', fornecedor.nome))
         aprovado_valor = str(registro.get('aprovado', '')).strip().upper()
-        nota_homologacao = _to_float(registro.get('nota homologacao'))
+        if nota_homologacao is None:
+            nota_homologacao = _to_float(registro.get('nota homologacao'))
         nota_iqf_planilha = _to_float(registro.get('iqf'))
     media_iqf_controle, total_notas_controle, observacoes_lista = _calcular_media_iqf_controle(
         fornecedor_nome_planilha, fornecedor.nome, df_controle
     )
     iqf_final = media_iqf_controle if media_iqf_controle is not None else nota_iqf_planilha
     status_final = _determinar_status_final(aprovado_valor, nota_homologacao, iqf_final, nota_iqf_planilha)
+    if status_manual:
+        status_final = status_manual
     documentos = [
         {
             'id': doc.id,
@@ -764,11 +898,73 @@ def _montar_registro_admin(fornecedor, df_homologados, df_controle):
         'nota_iqf_media': media_iqf_controle,
         'total_notas_iqf': total_notas_controle,
         'observacoes': observacoes_lista,
+        'observacao_admin': observacao_admin,
+        'nota_referencia_admin': nota_referencia_manual,
+        'decisao_atualizada_em': decisao_atualizada_em.isoformat() if decisao_atualizada_em else None,
         'documentos': documentos,
         'total_documentos': len(documentos),
         'ultima_atividade': ultima_atividade.isoformat() if ultima_atividade else None,
         'data_cadastro': fornecedor.data_cadastro.isoformat() if fornecedor.data_cadastro else None
     }
+
+
+def _montar_resumo_portal(fornecedor, df_homologados, df_controle):
+    info_admin = _montar_registro_admin(fornecedor, df_homologados, df_controle)
+    ocorrencias = [
+        str(item).strip()
+        for item in info_admin.get('observacoes', []) or []
+        if str(item).strip()
+    ]
+    ultima_atividade = info_admin.get('ultima_atividade')
+    if not ultima_atividade and fornecedor.data_cadastro:
+        ultima_atividade = fornecedor.data_cadastro.isoformat()
+    proxima_reavaliacao = None
+    if ultima_atividade:
+        try:
+            data_base = datetime.fromisoformat(ultima_atividade)
+            proxima_reavaliacao = (data_base + timedelta(days=365)).isoformat()
+        except ValueError:
+            proxima_reavaliacao = None
+    nota_homologacao = info_admin.get('nota_homologacao')
+    media_iqf = info_admin.get('nota_iqf') or info_admin.get('nota_iqf_media') or info_admin.get('nota_iqf_planilha')
+    media_iqf = _to_float(media_iqf) or 0.0
+    total_avaliacoes = info_admin.get('total_notas_iqf') or 1
+    try:
+        total_avaliacoes = max(int(total_avaliacoes), 1)
+    except (TypeError, ValueError):
+        total_avaliacoes = 1
+    status = (info_admin.get('status') or 'EM_ANALISE').strip().upper()
+    status_legivel = status.replace('_', ' ').title()
+    feedback = '; '.join(ocorrencias) if ocorrencias else 'Aguardando analise dos documentos enviados.'
+    nota_homologacao_texto = ''
+    if isinstance(nota_homologacao, (int, float)):
+        nota_homologacao_texto = f'{nota_homologacao:.2f}'.replace('.', ',')
+    resumo = {
+        'id': fornecedor.id,
+        'nome': fornecedor.nome,
+        'email': fornecedor.email,
+        'cnpj': fornecedor.cnpj,
+        'telefone': getattr(fornecedor, 'telefone', None),
+        'categoria': fornecedor.categoria,
+        'status': status,
+        'statusLegivel': status_legivel,
+        'mediaIQF': media_iqf,
+        'media_iqf': media_iqf,
+        'notaIQF': media_iqf,
+        'nota_iqf': media_iqf,
+        'mediaHomologacao': nota_homologacao or 0,
+        'nota_homologacao': nota_homologacao or 0,
+        'totalAvaliacoes': total_avaliacoes,
+        'total_notas_iqf': total_avaliacoes,
+        'ocorrencias': ocorrencias,
+        'feedback': feedback,
+        'observacao': feedback,
+        'ultimaAtualizacao': ultima_atividade,
+        'ultimaAvaliacao': ultima_atividade,
+        'proximaReavaliacao': proxima_reavaliacao,
+        'notaHomologacaoTexto': nota_homologacao_texto,
+    }
+    return resumo
 def _admin_usuario_autorizado():
     identidade = get_jwt_identity()
     claims = get_jwt()
@@ -854,6 +1050,132 @@ def painel_admin_fornecedores():
     except Exception as exc:
         print(f'Erro ao listar fornecedores admin: {exc}')
         return jsonify(message='Erro ao listar fornecedores'), 500
+
+
+@app.route('/api/admin/fornecedores/<int:fornecedor_id>/notas', methods=['PATCH', 'POST', 'OPTIONS'])
+@jwt_required()
+def atualizar_nota_fornecedor(fornecedor_id):
+    if request.method == 'OPTIONS':
+        return '', 204
+    if not _admin_usuario_autorizado():
+        return jsonify(message='Acesso nao autorizado.'), 403
+
+    fornecedor = Fornecedor.query.get(fornecedor_id)
+    if fornecedor is None:
+        return jsonify(message='Fornecedor nao encontrado.'), 404
+
+    payload = request.get_json() or {}
+    nota_valor = payload.get('notaHomologacao')
+    if nota_valor is None:
+        nota_valor = payload.get('nota_homologacao')
+    if nota_valor is None:
+        return jsonify(message='O campo notaHomologacao é obrigatório.'), 400
+    try:
+        nota_float = float(str(nota_valor).replace(',', '.'))
+    except (TypeError, ValueError):
+        return jsonify(message='Nota de homologacao invalida.'), 400
+    if not math.isfinite(nota_float):
+        return jsonify(message='Nota de homologacao invalida.'), 400
+
+    try:
+        registro_manual = NotaFornecedor.query.filter_by(fornecedor_id=fornecedor.id).first()
+        if registro_manual is None:
+            registro_manual = NotaFornecedor(fornecedor_id=fornecedor.id)
+            db.session.add(registro_manual)
+        registro_manual.nota_homologacao = nota_float
+        registro_manual.atualizado_em = datetime.utcnow()
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'Erro ao atualizar nota de homologacao: {exc}')
+        return jsonify(message='Erro ao atualizar nota de homologacao.'), 500
+
+    df_homologados = None
+    df_controle = None
+    try:
+        df_homologados, df_controle = _carregar_planilhas_homologacao()
+    except FileNotFoundError:
+        df_homologados = None
+        df_controle = None
+    except Exception as exc:
+        print(f'Erro ao carregar planilhas apos atualizar nota: {exc}')
+        df_homologados = None
+        df_controle = None
+
+    fornecedor_payload = _montar_registro_admin(fornecedor, df_homologados, df_controle)
+    fornecedor_payload['nota_homologacao'] = nota_float
+    return jsonify(
+        message='Nota de homologacao atualizada com sucesso.',
+        fornecedor=fornecedor_payload
+    ), 200
+
+
+@app.route('/api/admin/fornecedores/<int:fornecedor_id>/decisao', methods=['POST', 'OPTIONS'])
+@jwt_required()
+def registrar_decisao_fornecedor(fornecedor_id):
+    if request.method == 'OPTIONS':
+        return '', 204
+    if not _admin_usuario_autorizado():
+        return jsonify(message='Acesso nao autorizado.'), 403
+
+    fornecedor = Fornecedor.query.get(fornecedor_id)
+    if fornecedor is None:
+        return jsonify(message='Fornecedor nao encontrado.'), 404
+
+    payload = request.get_json() or {}
+    status_informado = (payload.get('status') or '').strip().upper()
+    status_validos = {'APROVADO', 'REPROVADO', 'EM_ANALISE'}
+    if status_informado not in status_validos:
+        return jsonify(message='Status informado invalido.'), 400
+
+    observacao = (payload.get('observacao') or '').strip()
+    nota_referencia_valor = payload.get('notaReferencia')
+    nota_referencia = None
+    if nota_referencia_valor is not None:
+        try:
+            nota_referencia = float(str(nota_referencia_valor).replace(',', '.'))
+        except (TypeError, ValueError):
+            nota_referencia = None
+
+    enviar_email_flag = bool(payload.get('enviarEmail'))
+
+    registro_manual = NotaFornecedor.query.filter_by(fornecedor_id=fornecedor.id).first()
+    if registro_manual is None:
+        registro_manual = NotaFornecedor(fornecedor_id=fornecedor.id)
+        db.session.add(registro_manual)
+
+    registro_manual.status_decisao = status_informado
+    registro_manual.observacao_admin = observacao or None
+    registro_manual.nota_referencia = nota_referencia
+    registro_manual.decisao_atualizada_em = datetime.utcnow()
+
+    email_enviado = False
+    if enviar_email_flag:
+        email_enviado = _enviar_email_decisao(fornecedor, status_informado, observacao)
+    registro_manual.email_enviado = email_enviado
+
+    try:
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'Erro ao registrar decisao: {exc}')
+        return jsonify(message='Erro ao registrar decisao do fornecedor.'), 500
+
+    df_homologados = None
+    df_controle = None
+    try:
+        df_homologados, df_controle = _carregar_planilhas_homologacao()
+    except FileNotFoundError:
+        pass
+    except Exception as exc:
+        print(f'Erro ao carregar planilhas apos decisao: {exc}')
+
+    fornecedor_payload = _montar_registro_admin(fornecedor, df_homologados, df_controle)
+    return jsonify(
+        message='Decisao registrada com sucesso.',
+        emailEnviado=email_enviado,
+        fornecedor=fornecedor_payload
+    ), 200
 @app.route('/api/admin/notificacoes', methods=['GET'])
 @jwt_required()
 def painel_admin_notificacoes():
@@ -1200,6 +1522,59 @@ def enviar_email_documento(fornecedor_nome, documento_nome, categoria, destinata
     except Exception as e:
         print(f"Erro ao enviar e-mail para {destinatario}: {e}")
         return None
+
+
+def _enviar_email_decisao(fornecedor, status_informado, observacao):
+    try:
+        assunto = (
+            "Portal Engeman - Homologacao aprovada"
+            if status_informado == 'APROVADO'
+            else "Portal Engeman - Homologacao reprovada"
+        )
+        status_legivel = "aprovado" if status_informado == 'APROVADO' else "reprovado"
+        corpo = f"""
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Resultado da Homologacao</title>
+</head>
+<body style="margin:0;padding:0;background:#f8fafc;font-family:'Inter',Arial,sans-serif;color:#0f172a;">
+    <table role="presentation" cellspacing="0" cellpadding="0" width="100%">
+        <tr>
+            <td align="center" style="padding:32px;">
+                <table role="presentation" cellspacing="0" cellpadding="0" width="100%" style="max-width:600px;background:#ffffff;border-radius:16px;padding:32px;border:1px solid #e2e8f0;">
+                    <tr>
+                        <td style="text-align:center;padding-bottom:16px;">
+                            <h1 style="margin:0;font-size:22px;color:#0f172a;">Decisao sobre sua homologacao</h1>
+                            <p style="margin:8px 0 0;color:#475569;font-size:14px;">Fornecedor: <strong>{fornecedor.nome}</strong></p>
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding:16px;background:#f8fafc;border-radius:12px;border:1px solid #e2e8f0;color:#0f172a;">
+                            Informamos que o processo foi <strong>{status_legivel}</strong>.
+                            {f"<p style='margin-top:12px;color:#475569;'>Observacao: {observacao}</p>" if observacao else ""}
+                        </td>
+                    </tr>
+                    <tr>
+                        <td style="padding-top:20px;color:#475569;font-size:13px;">
+                            Em caso de duvidas, nossa equipe esta a disposicao pelo Portal Engeman.
+                        </td>
+                    </tr>
+                </table>
+            </td>
+        </tr>
+    </table>
+</body>
+</html>
+"""
+        imagem_path = os.path.join(os.path.dirname(app.root_path), 'static', 'colorida.png')
+        enviar_email(fornecedor.email, assunto, corpo, imagem_path)
+        return True
+    except Exception as exc:
+        print(f'Erro ao enviar e-mail de decisao: {exc}')
+        return False
 def enviar_email(destinatario, assunto, corpo, imagem_path):
     try:
         msg = Message(assunto, recipients=[destinatario], html=corpo)

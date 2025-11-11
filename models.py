@@ -21,6 +21,7 @@ class Fornecedor(db.Model):
 
     documentos = db.relationship('Documento', backref='fornecedor', lazy=True)
     dados_homologacao = db.relationship('Homologacao', backref='fornecedor', lazy=True)
+    nota_admin = db.relationship('NotaFornecedor', backref='fornecedor', uselist=False)
 
     def __init__(self, nome, email, cnpj, senha, **kwargs):
         super().__init__(**kwargs)
@@ -50,3 +51,22 @@ class Homologacao(db.Model):
     observacoes = db.Column(db.Text, nullable=True)
 
     fornecedor_id = db.Column(db.Integer, db.ForeignKey('fornecedores.id'), nullable=False)
+
+
+class NotaFornecedor(db.Model):
+    __tablename__ = 'notas_fornecedores'
+
+    id = db.Column(db.Integer, primary_key=True)
+    fornecedor_id = db.Column(
+        db.Integer,
+        db.ForeignKey('fornecedores.id'),
+        nullable=False,
+        unique=True
+    )
+    nota_homologacao = db.Column(db.Float, nullable=True)
+    atualizado_em = db.Column(db.DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    status_decisao = db.Column(db.String(20), nullable=True)
+    observacao_admin = db.Column(db.Text, nullable=True)
+    nota_referencia = db.Column(db.Float, nullable=True)
+    email_enviado = db.Column(db.Boolean, default=False, nullable=False)
+    decisao_atualizada_em = db.Column(db.DateTime, nullable=True)

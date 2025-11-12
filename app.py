@@ -502,6 +502,95 @@ def _resolver_planilha(nome_arquivo):
     return None
 
 
+def _normalizar_texto(valor):
+    if valor is None:
+        return ''
+    if isinstance(valor, str):
+        texto = valor
+    else:
+        try:
+            if pd.isna(valor):
+                return ''
+        except Exception:
+            pass
+        texto = str(valor)
+    texto = unicodedata.normalize('NFKD', texto)
+    texto = ''.join(ch for ch in texto if not unicodedata.combining(ch))
+    texto = ' '.join(texto.split())
+    return texto.upper().strip()
+
+
+def _normalizar_chave(valor):
+    texto = _normalizar_texto(valor)
+    return ''.join(ch for ch in texto if ch.isalnum())
+
+
+def _contar_valores_textuais(serie):
+    contador = 0
+    for valor in serie.dropna():
+        if isinstance(valor, str) and valor.strip():
+            contador += 1
+        elif not isinstance(valor, str):
+            texto = str(valor).strip()
+            if texto:
+                contador += 1
+    return contador
+
+
+def _colunas_por_candidatos(df, candidatos, fallback_indices=None, max_count=None):
+    encontrados = []
+    mapa = {}
+    for idx, coluna in enumerate(df.columns):
+        chave = _normalizar_chave(coluna)
+        if chave and chave not in mapa:
+            mapa[chave] = coluna
+    for candidato in candidatos:
+        chave_candidato = _normalizar_chave(candidato)
+        coluna = mapa.get(chave_candidato)
+        if coluna and coluna not in encontrados:
+            encontrados.append(coluna)
+            if max_count and len(encontrados) >= max_count:
+                return encontrados
+    if fallback_indices:
+        for indice in fallback_indices:
+            if 0 <= indice < len(df.columns):
+                coluna = df.columns[indice]
+                if coluna not in encontrados:
+                    conteudo = _contar_valores_textuais(df[coluna])
+                    if conteudo == 0:
+                        continue
+                    encontrados.append(coluna)
+                    if max_count and len(encontrados) >= max_count:
+                        return encontrados
+    if not encontrados:
+        melhor_coluna = None
+        melhor_contagem = 0
+        for coluna in df.columns:
+            contagem = _contar_valores_textuais(df[coluna])
+            if contagem > melhor_contagem:
+                melhor_coluna = coluna
+                melhor_contagem = contagem
+        if melhor_coluna is not None:
+            encontrados.append(melhor_coluna)
+    if max_count:
+        return encontrados[:max_count]
+    return encontrados
+
+
+CLAF_VALORES_IGNORADOS = {
+    'MATERIAL / SERVICO',
+    'MATERIAL/SERVICO',
+    'MATERIAIS',
+    'CATEGORIA',
+    'GRUPO',
+    'FAMILIA',
+    'REQUISITOS LEGAIS',
+    'REQUISITOS ESTABELECIDOS PELA ENGEMAN',
+    'CRITERIOS DE QUALIFICACAO',
+    'GRAUS DE RISCO COMPLIANCE',
+}
+
+
 @app.route('/api/envio-documento', methods=['POST'])
 def enviar_documento():
     try:
@@ -554,22 +643,53 @@ def documentos_necessarios():
             return jsonify(message="Categoria nao fornecida"), 400
         claf_path = _obter_caminho_claf()
         df = pd.read_excel(claf_path, header=0)
-        df.columns = (
-            df.columns.str.strip()
-            .str.replace('\n', '', regex=False)
-            .str.replace('\r', '', regex=False)
+        df.columns = [str(col).strip() for col in df.columns]
+        coluna_material_lista = _colunas_por_candidatos(
+            df,
+            ('material', 'materiais', 'material/servico', 'categoria', 'grupo', 'familia'),
+            fallback_indices=[0],
+            max_count=1,
         )
-        if 'MATERIAL' not in df.columns:
-            return jsonify(message="Coluna 'MATERIAL' nao encontrada na planilha"), 500
-        df_filtrado = df[
-            df['MATERIAL'].astype(str).str.upper().str.contains(categoria.upper(), na=False)
-        ]
+        if not coluna_material_lista:
+            return jsonify(message="Coluna de materiais nao encontrada na planilha"), 500
+        coluna_material = coluna_material_lista[0]
+        colunas_documentos = _colunas_por_candidatos(
+            df,
+            (
+                'requisitos legais',
+                'requisitos_estabelecidos_pela_engeman',
+                'requisitos estabelecidos pela engeman',
+                'criterios de qualificacao',
+            ),
+            fallback_indices=[1, 2],
+        )
+        if not colunas_documentos:
+            return jsonify(message="Colunas de documentos nao encontradas na planilha"), 500
+        categoria_normalizada = _normalizar_texto(categoria)
+        serie_categorias = df[coluna_material].apply(_normalizar_texto)
+        mask = serie_categorias.apply(
+            lambda valor: bool(valor) and (
+                categoria_normalizada in valor or valor in categoria_normalizada
+            )
+        )
+        df_filtrado = df[mask]
         documentos = []
-        if 'REQUISITOS LEGAIS' in df.columns:
-            for _, row in df_filtrado.iterrows():
-                valor = row.get('REQUISITOS LEGAIS')
-                if pd.notna(valor):
-                    documentos.append(str(valor).strip())
+        vistos = set()
+        for _, row in df_filtrado.iterrows():
+            for coluna_doc in colunas_documentos:
+                valor = row.get(coluna_doc)
+                if pd.isna(valor):
+                    continue
+                texto = str(valor).strip()
+                if not texto:
+                    continue
+                texto_normalizado = _normalizar_texto(texto)
+                if not texto_normalizado or texto_normalizado in CLAF_VALORES_IGNORADOS:
+                    continue
+                if texto_normalizado in vistos:
+                    continue
+                vistos.add(texto_normalizado)
+                documentos.append(texto)
         return jsonify(documentos=documentos), 200
     except FileNotFoundError as exc:
         return jsonify(message=str(exc)), 500
@@ -582,28 +702,33 @@ def listar_categorias():
     try:
         claf_path = _obter_caminho_claf()
         df = pd.read_excel(claf_path, header=0)
-        df.columns = df.columns.str.strip()
-        lower_map = {col.lower(): col for col in df.columns}
-        coluna_material = None
-        for candidato in ('material', 'materiais', 'categoria', 'grupo', 'familia'):
-            if candidato in lower_map:
-                coluna_material = lower_map[candidato]
-                break
-        if coluna_material is None:
+        df.columns = [str(col).strip() for col in df.columns]
+        coluna_material_lista = _colunas_por_candidatos(
+            df,
+            ('material', 'materiais', 'material/servico', 'categoria', 'grupo', 'familia'),
+            fallback_indices=[0],
+            max_count=1,
+        )
+        if not coluna_material_lista:
             return jsonify(message="Coluna de materiais nao encontrada na planilha"), 500
-        serie = df[coluna_material].dropna().astype(str)
+        coluna_material = coluna_material_lista[0]
+        serie = df[coluna_material]
         vistos = set()
         materiais = []
         for valor in serie:
-            nome = valor.strip()
+            if pd.isna(valor):
+                continue
+            nome = str(valor).strip()
             if not nome:
                 continue
-            chave = nome.lower()
+            chave = _normalizar_texto(nome)
+            if not chave or chave in CLAF_VALORES_IGNORADOS:
+                continue
             if chave in vistos:
                 continue
             vistos.add(chave)
             materiais.append(nome)
-        materiais.sort(key=lambda x: x.lower())
+        materiais.sort(key=_normalizar_texto)
         return jsonify(materiais=materiais, total=len(materiais)), 200
     except FileNotFoundError as exc:
         return jsonify(message=str(exc)), 500

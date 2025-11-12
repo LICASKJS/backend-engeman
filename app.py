@@ -35,6 +35,8 @@ ADMIN_PASSWORD = 'admin123'
 ALLOWED_CORS_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
+    "http://localhost:3001",
+    "http://127.0.0.1:3001",
     "https://portalengeman-front.vercel.app",
     "https://portalengeman.vercel.app",
 ]
@@ -487,6 +489,19 @@ def _obter_caminho_claf():
     raise FileNotFoundError('Planilha CLAF.xlsx nao encontrada.')
 
 
+def _resolver_planilha(nome_arquivo):
+    candidatos = [
+        os.path.join(app.root_path, '..', 'static', nome_arquivo),
+        os.path.join(app.root_path, '..', 'uploads', nome_arquivo),
+        os.path.join(app.root_path, 'static', nome_arquivo),
+    ]
+    for caminho in candidatos:
+        caminho_abs = os.path.abspath(caminho)
+        if os.path.exists(caminho_abs):
+            return caminho_abs
+    return None
+
+
 @app.route('/api/envio-documento', methods=['POST'])
 def enviar_documento():
     try:
@@ -752,23 +767,25 @@ def _normalize_text(value):
     return ' '.join(normalized.split())
 
 def _carregar_planilhas_homologacao():
-    path_homologados = os.path.abspath(
-        os.path.join(app.root_path, '..', 'static', 'fornecedores_homologados.xlsx')
-    )
-    path_controle = os.path.abspath(
-        os.path.join(app.root_path, '..', 'static', 'atendimento controle_qualidade.xlsx')
-    )
-    if not os.path.exists(path_homologados) or not os.path.exists(path_controle):
-        raise FileNotFoundError('Planilhas necessárias não foram encontradas')
-    df_homologados = pd.read_excel(path_homologados)
-    df_controle = pd.read_excel(path_controle)
-    df_homologados.columns = (
-        df_homologados.columns.str.strip().str.lower().str.replace(' ', '_')
-    )
-    df_controle.columns = (
-        df_controle.columns.str.strip().str.lower().str.replace(' ', '_')
-    )
-    return df_homologados, df_controle
+    path_homologados = _resolver_planilha('fornecedores_homologados.xlsx')
+    path_controle = _resolver_planilha('atendimento controle_qualidade.xlsx')
+    if not path_homologados or not path_controle:
+        print('Planilhas de homologacao nao encontradas. Continuando sem dados de planilha.')
+        return None, None
+    try:
+        df_homologados = pd.read_excel(path_homologados)
+        df_controle = pd.read_excel(path_controle)
+        df_homologados.columns = (
+            df_homologados.columns.str.strip().str.lower().str.replace(' ', '_')
+        )
+        df_controle.columns = (
+            df_controle.columns.str.strip().str.lower().str.replace(' ', '_')
+        )
+        return df_homologados, df_controle
+    except Exception as exc:
+        print(f'Erro ao carregar planilhas de homologacao: {exc}')
+        return None, None
+
 def _to_float(value):
     try:
         if value in (None, '', 'nan'):
@@ -1591,3 +1608,4 @@ def gerar_token_recuperacao():
     return random.randint(100000, 999999)
 if __name__ == '__main__':
     app.run(debug=True)
+

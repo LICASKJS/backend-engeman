@@ -115,24 +115,25 @@ def cadastrar_fornecedor():
 @app.route('/api/login', methods=['POST'])
 def login():
     try:
-        data = request.get_json()
+        data = request.get_json() or {}
         email = data.get("email")
         senha = data.get("senha")
         if not email or not senha:
             app.logger.error(f"Login falhou, email ou senha não fornecidos: {data}")
             return jsonify(message="Email e senha são obrigatórios."), 400
+
         fornecedor = Fornecedor.query.filter(Fornecedor.email.ilike(email)).first()
-        if fornecedor:
-            app.logger.info(f"Fornecedor encontrado: {fornecedor.email}")
-            if check_password_hash(fornecedor.senha, senha):
-                access_token = create_access_token(identity=str(fornecedor.id))
-                app.logger.info(f"Token gerado para o fornecedor {fornecedor.email}")
-                return jsonify(access_token=access_token), 200
-            else:
-                app.logger.error(f"Senha incorreta para o fornecedor: {fornecedor.email}")
-        else:
+        if not fornecedor:
             app.logger.error(f"Fornecedor não encontrado: {email}")
             return jsonify(message="Credenciais inválidas"), 401
+
+        if not check_password_hash(fornecedor.senha, senha):
+            app.logger.error(f"Senha incorreta para o fornecedor: {fornecedor.email}")
+            return jsonify(message="Credenciais inválidas"), 401
+
+        access_token = create_access_token(identity=str(fornecedor.id))
+        app.logger.info(f"Token gerado para o fornecedor {fornecedor.email}")
+        return jsonify(access_token=access_token), 200
     except Exception as e:
         app.logger.error(f"Erro no login: {str(e)}")
         return jsonify(message="Erro ao autenticar, tente novamente mais tarde."), 500

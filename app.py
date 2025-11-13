@@ -1005,7 +1005,7 @@ def _montar_registro_admin(fornecedor, df_homologados, df_controle):
         fornecedor_nome_planilha = str(registro.get('agente', fornecedor.nome))
         aprovado_valor = str(registro.get('aprovado', '')).strip().upper()
         if nota_homologacao is None:
-            nota_homologacao = _to_float(registro.get('nota homologacao'))
+            nota_homologacao = _to_float(registro.get('nota_homologacao'))
         nota_iqf_planilha = _to_float(registro.get('iqf'))
     media_iqf_controle, total_notas_controle, observacoes_lista = _calcular_media_iqf_controle(
         fornecedor_nome_planilha, fornecedor.nome, df_controle

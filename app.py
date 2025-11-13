@@ -478,8 +478,10 @@ def allowed_file(filename):
 
 def _obter_caminho_claf():
     candidatos = [
+        os.path.join(app.root_path, 'uploads', 'CLAF.xlsx'),
         os.path.join(app.root_path, '..', 'uploads', 'CLAF.xlsx'),
         os.path.join(app.root_path, '..', 'static', 'CLAF.xlsx'),
+        os.path.join(app.root_path, '..', 'public', 'docs', 'CLAF.xlsx'),
         os.path.join(app.root_path, 'static', 'CLAF.xlsx'),
     ]
     for caminho in candidatos:
@@ -491,8 +493,10 @@ def _obter_caminho_claf():
 
 def _resolver_planilha(nome_arquivo):
     candidatos = [
+        os.path.join(app.root_path, 'uploads', nome_arquivo),
         os.path.join(app.root_path, '..', 'static', nome_arquivo),
         os.path.join(app.root_path, '..', 'uploads', nome_arquivo),
+        os.path.join(app.root_path, '..', 'public', 'docs', nome_arquivo),
         os.path.join(app.root_path, 'static', nome_arquivo),
     ]
     for caminho in candidatos:
@@ -1689,19 +1693,19 @@ def _enviar_email_decisao(fornecedor, status_informado, observacao):
                 <table role="presentation" cellspacing="0" cellpadding="0" width="100%" style="max-width:600px;background:#ffffff;border-radius:16px;padding:32px;border:1px solid #e2e8f0;">
                     <tr>
                         <td style="text-align:center;padding-bottom:16px;">
-                            <h1 style="margin:0;font-size:22px;color:#0f172a;">Decisao sobre sua homologacao</h1>
+                            <h1 style="margin:0;font-size:22px;color:oklch(0.646 0.222 41.116);">Decisão sobre sua homologação</h1>
                             <p style="margin:8px 0 0;color:#475569;font-size:14px;">Fornecedor: <strong>{fornecedor.nome}</strong></p>
                         </td>
                     </tr>
                     <tr>
                         <td style="padding:16px;background:#f8fafc;border-radius:12px;border:1px solid #e2e8f0;color:#0f172a;">
                             Informamos que o processo foi <strong>{status_legivel}</strong>.
-                            {f"<p style='margin-top:12px;color:#475569;'>Observacao: {observacao}</p>" if observacao else ""}
+                            {f"<p style='margin-top:12px;color:#475569;'>Observação: {observacao}</p>" if observacao else ""}
                         </td>
                     </tr>
                     <tr>
                         <td style="padding-top:20px;color:#475569;font-size:13px;">
-                            Em caso de duvidas, nossa equipe esta a disposicao pelo Portal Engeman.
+                            Em caso de dúvidas, nossa equipe está a disposição pelo Portal Engeman.
                         </td>
                     </tr>
                 </table>

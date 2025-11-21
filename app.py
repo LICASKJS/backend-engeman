@@ -29,6 +29,143 @@ ALLOWED_EXTENSIONS = {'pdf', 'png', 'jpg', 'jpeg', 'docx', 'xlsx'}
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 
+def _normalizar_nome_documento(nome):
+    """Remove caracteres não alfanuméricos para permitir comparações tolerantes."""
+    if not nome:
+        return ''
+    return ''.join(ch.lower() for ch in str(nome) if ch.isalnum())
+
+
+def _nomes_documento_candidatos(nome):
+    """Gera variações do nome informado para tentar localizar o arquivo no disco."""
+    candidatos = []
+
+    def _adicionar(valor):
+        valor = (valor or '').strip()
+        if valor and valor not in candidatos:
+            candidatos.append(valor)
+
+    base = (nome or '').strip()
+    if base:
+        _adicionar(base)
+        _adicionar(secure_filename(base))
+        _adicionar(base.replace('_', ' '))
+        _adicionar(base.replace('_', '-'))
+        _adicionar(base.replace('-', ' '))
+
+    return candidatos
+
+
+def _diretorios_documento_candidatos(fornecedor_id):
+    """Lista diretórios relevantes onde os arquivos podem estar armazenados."""
+    diretorios = []
+    vistos = set()
+
+    def _adicionar(caminho):
+        if not caminho:
+            return
+        caminho_abs = os.path.abspath(caminho)
+        if caminho_abs in vistos:
+            return
+        vistos.add(caminho_abs)
+        diretorios.append(caminho_abs)
+
+    fornecedor_segmento = str(fornecedor_id) if fornecedor_id is not None else None
+    raiz_app = os.path.abspath(app.root_path)
+    raiz_pai = os.path.abspath(os.path.dirname(raiz_app))
+
+    primarios = [
+        UPLOAD_FOLDER,
+        app.config.get('UPLOAD_FOLDER'),
+        os.path.join(raiz_app, 'uploads'),
+        os.path.join(raiz_app, 'instance', 'uploads'),
+        os.path.join(raiz_pai, 'uploads'),
+        os.path.join(raiz_pai, 'instance', 'uploads'),
+        os.path.join(raiz_app, 'static'),
+        os.path.join(raiz_pai, 'static'),
+    ]
+
+    for base in primarios:
+        _adicionar(base)
+        if fornecedor_segmento:
+            _adicionar(os.path.join(base, fornecedor_segmento))
+        _adicionar(os.path.join(base, 'static'))
+        _adicionar(os.path.join(base, 'uploads'))
+
+    return diretorios
+
+
+def _carregar_documento_de_fontes(documento):
+    """
+    Procura o conteúdo do documento em diferentes diretórios do projeto para cenários
+    em que o arquivo tenha sido movido ou o disco volátil tenha sido reiniciado.
+    """
+    nomes_candidatos = _nomes_documento_candidatos(documento.nome_documento)
+    diretorios = _diretorios_documento_candidatos(documento.fornecedor_id)
+    caminhos_vistos = set()
+
+    for diretorio in diretorios:
+        for nome in nomes_candidatos:
+            caminho = os.path.abspath(os.path.join(diretorio, nome))
+            if caminho in caminhos_vistos:
+                continue
+            caminhos_vistos.add(caminho)
+            if not os.path.isfile(caminho):
+                continue
+            try:
+                with open(caminho, 'rb') as arquivo:
+                    dados = arquivo.read()
+            except OSError as exc:
+                print(f'Falha ao ler arquivo alternativo {caminho} para documento {documento.id}: {exc}')
+                continue
+            if dados:
+                return caminho, dados
+
+    alvo_normalizado = _normalizar_nome_documento(documento.nome_documento)
+    if not alvo_normalizado:
+        return None, None
+
+    for diretorio in diretorios:
+        if not os.path.isdir(diretorio):
+            continue
+        try:
+            entradas = os.listdir(diretorio)
+        except OSError as exc:
+            print(f'Falha ao listar {diretorio}: {exc}')
+            continue
+        for entrada in entradas:
+            caminho = os.path.abspath(os.path.join(diretorio, entrada))
+            if caminho in caminhos_vistos or not os.path.isfile(caminho):
+                continue
+            if _normalizar_nome_documento(entrada) != alvo_normalizado:
+                continue
+            try:
+                with open(caminho, 'rb') as arquivo:
+                    dados = arquivo.read()
+            except OSError as exc:
+                print(f'Falha ao ler arquivo normalizado {caminho} para documento {documento.id}: {exc}')
+                continue
+            if dados:
+                return caminho, dados
+    return None, None
+
+
+def _armazenar_documento_no_disco(documento, conteudo):
+    """Garante que exista uma cópia do documento no diretório esperado."""
+    if not conteudo or documento is None or documento.fornecedor_id is None:
+        return None
+    destino_dir = os.path.join(UPLOAD_FOLDER, str(documento.fornecedor_id))
+    try:
+        os.makedirs(destino_dir, exist_ok=True)
+        destino_caminho = os.path.join(destino_dir, documento.nome_documento)
+        with open(destino_caminho, 'wb') as destino:
+            destino.write(conteudo)
+        return destino_caminho
+    except OSError as exc:
+        print(f'Falha ao salvar documento {documento.id} no disco: {exc}')
+        return None
+
+
 def _resolver_logo_path(nome_arquivo='colorida.png'):
     """Procura o logo padrão em diferentes diretórios do projeto."""
     candidatos = [
@@ -154,20 +291,15 @@ def _backfill_documento_conteudo():
         return
     atualizados = 0
     for documento in documentos_sem_conteudo:
-        caminho = os.path.join(UPLOAD_FOLDER, str(documento.fornecedor_id), documento.nome_documento)
-        if not os.path.isfile(caminho):
-            continue
-        try:
-            with open(caminho, 'rb') as arquivo:
-                dados = arquivo.read()
-        except OSError as exc:
-            print(f'Erro ao ler arquivo do documento {documento.id}: {exc}')
-            continue
+        caminho, dados = _carregar_documento_de_fontes(documento)
         if not dados:
             continue
+        if caminho:
+            print(f'Conteudo recuperado para documento {documento.id} a partir de {caminho}')
         documento.dados_arquivo = dados
         if not documento.mime_type:
             documento.mime_type = mimetypes.guess_type(documento.nome_documento)[0] or 'application/octet-stream'
+        _armazenar_documento_no_disco(documento, dados)
         atualizados += 1
     if not atualizados:
         return
@@ -1561,9 +1693,24 @@ def baixar_documento_admin(documento_id):
             print(f'Erro ao enviar documento {documento_id}: {exc}')
             return jsonify(message='Erro ao baixar documento.'), 500
 
-    if documento.dados_arquivo:
+    conteudo_memoria = documento.dados_arquivo
+    if not conteudo_memoria:
+        caminho_fallback, dados_recuperados = _carregar_documento_de_fontes(documento)
+        if dados_recuperados:
+            documento.dados_arquivo = dados_recuperados
+            if not documento.mime_type:
+                documento.mime_type = mimetypes.guess_type(documento.nome_documento)[0] or 'application/octet-stream'
+            try:
+                db.session.commit()
+            except Exception as exc:
+                db.session.rollback()
+                print(f'Falha ao atualizar dados em memoria para documento {documento_id}: {exc}')
+            _armazenar_documento_no_disco(documento, dados_recuperados)
+            conteudo_memoria = dados_recuperados
+
+    if conteudo_memoria:
         try:
-            buffer = io.BytesIO(documento.dados_arquivo)
+            buffer = io.BytesIO(bytes(conteudo_memoria))
             buffer.seek(0)
             return send_file(
                 buffer,

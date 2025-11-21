@@ -8,6 +8,7 @@ from werkzeug.security import generate_password_hash, check_password_hash
 import random
 import base64
 import os
+import shutil
 import pandas as pd
 import math
 import unicodedata
@@ -24,6 +25,25 @@ UPLOAD_FOLDER = os.path.join(os.path.abspath(os.path.dirname(__file__)), 'upload
 ALLOWED_EXTENSIONS = {'pdf', 'png', 'jpg', 'jpeg', 'docx', 'xlsx'}
 
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+
+
+def _resolver_logo_path(nome_arquivo='colorida.png'):
+    """Procura o logo padrão em diferentes diretórios do projeto."""
+    candidatos = [
+        os.path.join(app.root_path, 'static', nome_arquivo),
+        os.path.join(os.path.dirname(app.root_path), 'static', nome_arquivo),
+        os.path.join(app.root_path, nome_arquivo),
+        os.path.join(os.path.dirname(app.root_path), nome_arquivo),
+    ]
+    vistos = set()
+    for caminho in candidatos:
+        caminho_abs = os.path.abspath(caminho)
+        if caminho_abs in vistos:
+            continue
+        vistos.add(caminho_abs)
+        if os.path.exists(caminho_abs):
+            return caminho_abs
+    return None
 
 ADMIN_ALLOWED_EMAILS = {
     'pedro.vilaca@engeman.net',
@@ -48,11 +68,13 @@ jwt = JWTManager(app)
 mail.init_app(app)
 migrate = Migrate(app, db)
 
+""""Função para inspecionar os dados e notas no banco de dados dos fornecedores pela página de admin."""
+
 def _ensure_nota_fornecedor_schema():
     try:
         inspector = inspect(db.engine)
     except Exception as exc:
-        print(f'Nao foi possivel inspecionar o banco para atualizar notas_fornecedores: {exc}')
+        print(f'Não foi possivel inspecionar o banco para atualizar as notas dos fornecedores: {exc}')
         return
     if 'notas_fornecedores' not in inspector.get_table_names():
         return
@@ -91,6 +113,10 @@ def home():
     return "Bem-vindo ao Portal de Fornecedores!"
 
 
+
+"""Endpoint de cadastro, exigindo o cadastro com o nome, cnpj, e-mail e senha."""
+
+
 @app.route('/api/cadastro', methods=['POST'])
 def cadastrar_fornecedor():
     try:
@@ -111,6 +137,9 @@ def cadastrar_fornecedor():
     except Exception as e:
         print(str(e))
         return jsonify(message="Erro ao cadastrar fornecedor: " + str(e)), 500
+    
+
+"""Endpoint que busca e verifica se o e-mail e senha já possui cadastro"""
     
 @app.route('/api/login', methods=['POST'])
 def login():
@@ -137,6 +166,10 @@ def login():
     except Exception as e:
         app.logger.error(f"Erro no login: {str(e)}")
         return jsonify(message="Erro ao autenticar, tente novamente mais tarde."), 500
+    
+
+
+"""Endpoint que gera um tokende 6 digitos para recuperação de senha, sendo enviada via e-mail"""   
     
 @app.route('/api/recuperar-senha', methods=['POST'])
 def recuperar_senha():
@@ -205,11 +238,14 @@ def recuperar_senha():
         </body>
         </html>
         """
-        imagem_path = os.path.join(os.path.dirname(app.root_path), 'static', 'colorida.png')
+        imagem_path = _resolver_logo_path()
         enviar_email(fornecedor.email, "Recuperação de Senha", corpo_email, imagem_path)
         return jsonify(message="Token de recuperação enviado por e-mail"), 200
     except Exception as e:
         return jsonify(message="Erro ao recuperar senha: " + str(e)), 500
+    
+
+"""Endpoint que valida o token para criar uma nova senha, sendo insirida no banco de dados substituindo a anterior"""    
     
 @app.route("/api/validar-token", methods=["POST"])
 def validar_token():
@@ -227,6 +263,8 @@ def validar_token():
     except Exception as e:
         print(f"Erro ao validar token: {e}")
         return jsonify(message="Erro ao validar token"), 500
+    
+"""Endpoint que ajusta a senha após validação do token"""    
     
 @app.route("/api/redefinir-senha", methods=["POST"])
 def redefinir_senha():
@@ -246,6 +284,8 @@ def redefinir_senha():
     db.session.commit()
     return jsonify(message="Senha redefinida com sucesso"), 200
 
+
+"""Endpoint que envia o assunto que o usário descreve, a função solicita o nome, email, o assunto e mensagem necessária, tendo como e-mail de envio o NOTIFICAÇÃO SUPRIMENTOS"""
 @app.route('/api/contato', methods=['POST'])
 def contato():
     try:
@@ -461,7 +501,7 @@ def contato():
 
 """
 
-        imagem_path = os.path.join(os.path.dirname(app.root_path), 'static', 'colorida.png')
+        imagem_path = _resolver_logo_path()
         enviar_email(
             destinatario="lucas.mateus@engeman.net",
             assunto=f"MENSAGEM DO PORTAL: {assunto}",
@@ -472,11 +512,13 @@ def contato():
     except Exception as e:
         print(f"Erro ao enviar mensagem: {e}")
         return jsonify(message="Erro ao enviar a mensagem."), 500
+    
+"""Função que permite alguns tipos de documentos, sendo exigido apenas o que se mostra na tela"""
 def allowed_file(filename):
     allowed_extensions = ['pdf', 'doc', 'docx', 'jpg', 'jpeg', 'png', 'xlsx', 'csv']
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in allowed_extensions
 
-
+"""Função que busca os dados das planilhas no CLAF."""
 def _obter_caminho_claf():
     candidatos = [
         os.path.join(app.root_path, 'uploads', 'CLAF.xlsx'),
@@ -506,6 +548,8 @@ def _resolver_planilha(nome_arquivo):
             return caminho_abs
     return None
 
+
+"""Tira qualquer caracteres especiais do texto."""
 
 def _normalizar_texto(valor):
     if valor is None:
@@ -596,6 +640,9 @@ CLAF_VALORES_IGNORADOS = {
 }
 
 
+"""Endpoint que permite enviar os documentos com base na categoria selecionada, deixando registrado no banco de dados o nome do fornecedor, seu id, e-mail e documentos enviados. 
+Tendo função que limita o tamanho do arquivo, retornando a mensagem."""
+
 @app.route('/api/envio-documento', methods=['POST'])
 def enviar_documento():
     try:
@@ -639,13 +686,16 @@ def enviar_documento():
     except Exception as e:
         return jsonify(message="Erro ao enviar documentos: " + str(e)), 500
     
+
+"""Endpoint que exige os documentos necessários com base na categoria escolhida pelo fornecedor"""  
+  
 @app.route('/api/documentos-necessarios', methods=['POST'])
 def documentos_necessarios():
     try:
         data = request.get_json() or {}
         categoria = (data.get('categoria') or '').strip()
         if not categoria:
-            return jsonify(message="Categoria nao fornecida"), 400
+            return jsonify(message="Categoria não fornecida"), 400
         claf_path = _obter_caminho_claf()
         df = pd.read_excel(claf_path, header=0)
         df.columns = [str(col).strip() for col in df.columns]
@@ -700,7 +750,8 @@ def documentos_necessarios():
         return jsonify(message=str(exc)), 500
     except Exception as e:
         return jsonify(message="Erro ao consultar documentos: " + str(e)), 500
-
+    
+"""Endpoint que busca na planilha CLAF as colunas necessárias das documentações por categoria"""
 
 @app.route('/api/categorias', methods=['GET'])
 def listar_categorias():
@@ -739,6 +790,11 @@ def listar_categorias():
         return jsonify(message=str(exc)), 500
     except Exception as exc:
         return jsonify(message="Erro ao listar categorias: " + str(exc)), 500
+
+"""Endpoint que busca os dados de homologação do fornecedor com base nas colunas das planilhas, 
+caso não tenha ele retorna que o fornecedor não foi encontrado, 
+se caso tenha ele calcula a sua média iqf com base nas quantidades de notas registrada no mês."""
+
 
 @app.route('/api/dados-homologacao', methods=['GET'])
 def consultar_dados_homologacao():
@@ -864,6 +920,8 @@ def consultar_dados_homologacao():
         return jsonify(message="Erro ao consultar dados de homologação", error_details=str(e)), 500
 
 
+"""Endpoint que calcula e resume os dados dos fornecedores como: nota iqf e nota de homologação."""
+
 @app.route('/api/portal/resumo', methods=['GET'])
 @jwt_required()
 def portal_resumo():
@@ -871,16 +929,16 @@ def portal_resumo():
     try:
         fornecedor_id = int(identidade)
     except (TypeError, ValueError):
-        return jsonify(message="Identidade do fornecedor invalida."), 400
+        return jsonify(message="Identidade do fornecedor inválida."), 400
     fornecedor = Fornecedor.query.get(fornecedor_id)
     if fornecedor is None:
-        return jsonify(message="Fornecedor nao encontrado."), 404
+        return jsonify(message="Fornecedor não encontrado."), 404
     df_homologados = None
     df_controle = None
     try:
         df_homologados, df_controle = _carregar_planilhas_homologacao()
     except FileNotFoundError as exc:
-        print(f'Planilhas de homologacao nao encontradas para resumo do portal: {exc}')
+        print(f'Planilhas de homologação não encontradas para resumo do portal: {exc}')
     except Exception as exc:
         print(f'Erro ao carregar planilhas para resumo do portal: {exc}')
     resumo = _montar_resumo_portal(fornecedor, df_homologados, df_controle)
@@ -900,7 +958,7 @@ def _carregar_planilhas_homologacao():
     path_homologados = _resolver_planilha('fornecedores_homologados.xlsx')
     path_controle = _resolver_planilha('atendimento controle_qualidade.xlsx')
     if not path_homologados or not path_controle:
-        print('Planilhas de homologacao nao encontradas. Continuando sem dados de planilha.')
+        print('Planilhas de homologação não encontradas. Continuando sem dados de planilha.')
         return None, None
     try:
         df_homologados = pd.read_excel(path_homologados)
@@ -913,16 +971,22 @@ def _carregar_planilhas_homologacao():
         )
         return df_homologados, df_controle
     except Exception as exc:
-        print(f'Erro ao carregar planilhas de homologacao: {exc}')
+        print(f'Erro ao carregar planilhas de homologação: {exc}')
         return None, None
 
 def _to_float(value):
     try:
         if value in (None, '', 'nan'):
             return None
-        return float(value)
+        valor = float(value)
+        if not math.isfinite(valor):
+            return None
+        return valor
     except (TypeError, ValueError):
         return None
+    
+"""Função que calcula a média iqf total de fornecedores com base nas notas lançadas no mês"""
+
 def _calcular_media_iqf_controle(fornecedor_nome_planilha, fornecedor_nome_busca, df_controle):
     if df_controle is None or df_controle.empty:
         return None, 0, []
@@ -945,6 +1009,8 @@ def _calcular_media_iqf_controle(fornecedor_nome_planilha, fornecedor_nome_busca
         observacoes = subset['observacao'].dropna().astype(str).tolist()
     return media, total, observacoes
 
+"""Função com base na nota determina se o fornecedor está aprovado, reprovado ou em análise"""
+
 def _determinar_status_final(aprovado_valor, nota_homologacao, iqf_calculada, nota_iqf_planilha):
     for valor in (iqf_calculada, nota_iqf_planilha, nota_homologacao):
         valor_float = _to_float(valor)
@@ -956,6 +1022,10 @@ def _determinar_status_final(aprovado_valor, nota_homologacao, iqf_calculada, no
     if aprovado_valor == 'S':
         return 'APROVADO'
     return 'EM_ANALISE'
+
+
+
+"""Função que monta os status atual em tempo real do fornecedor"""
 
 def _montar_registro_admin(fornecedor, df_homologados, df_controle):
     nota_homologacao = None
@@ -1011,6 +1081,11 @@ def _montar_registro_admin(fornecedor, df_homologados, df_controle):
         fornecedor_nome_planilha, fornecedor.nome, df_controle
     )
     iqf_final = media_iqf_controle if media_iqf_controle is not None else nota_iqf_planilha
+    if iqf_final is None and nota_referencia_manual is not None:
+        try:
+            iqf_final = float(nota_referencia_manual)
+        except (TypeError, ValueError):
+            iqf_final = None
     status_final = _determinar_status_final(aprovado_valor, nota_homologacao, iqf_final, nota_iqf_planilha)
     if status_manual:
         status_final = status_manual
@@ -1054,6 +1129,7 @@ def _montar_registro_admin(fornecedor, df_homologados, df_controle):
         'data_cadastro': fornecedor.data_cadastro.isoformat() if fornecedor.data_cadastro else None
     }
 
+"""Função que resume as médias e as ultimas notificações dos fornecedores"""
 
 def _montar_resumo_portal(fornecedor, df_homologados, df_controle):
     info_admin = _montar_registro_admin(fornecedor, df_homologados, df_controle)
@@ -1112,6 +1188,9 @@ def _montar_resumo_portal(fornecedor, df_homologados, df_controle):
         'notaHomologacaoTexto': nota_homologacao_texto,
     }
     return resumo
+
+"""Função que autoriza os e-mails necessários para página de admin"""
+
 def _admin_usuario_autorizado():
     identidade = get_jwt_identity()
     claims = get_jwt()
@@ -1125,6 +1204,8 @@ def _admin_usuario_autorizado():
         return False
     return True
 
+
+"""Função que autoriza entrar na página com e-mail e senha de admin """
 
 @app.route('/api/admin/login', methods=['POST'])
 def admin_login():
@@ -1167,13 +1248,13 @@ def painel_admin_dashboard():
         print(f'Erro no dashboard admin: {exc}')
         return jsonify(message='Erro ao gerar dashboard administrativo'), 500
     
-
+"""Função que autoriza o usúario com base no e-mail"""
 
 @app.route('/api/admin/fornecedores', methods=['GET'])
 @jwt_required()
 def painel_admin_fornecedores():
     if not _admin_usuario_autorizado():
-        return jsonify(message='Acesso nao autorizado.'), 403
+        return jsonify(message='Acesso não autorizado.'), 403
     try:
         search_term = request.args.get('search', '', type=str).strip()
         query = Fornecedor.query
@@ -1199,17 +1280,19 @@ def painel_admin_fornecedores():
         return jsonify(message='Erro ao listar fornecedores'), 500
 
 
+"""Função que permite excluir, alterar e deletar nota de homologação do fornecedor"""
+
 @app.route('/api/admin/fornecedores/<int:fornecedor_id>/notas', methods=['PATCH', 'POST', 'OPTIONS'])
-@jwt_required()
+@jwt_required(optional=True)
 def atualizar_nota_fornecedor(fornecedor_id):
     if request.method == 'OPTIONS':
         return '', 204
     if not _admin_usuario_autorizado():
-        return jsonify(message='Acesso nao autorizado.'), 403
+        return jsonify(message='Acesso não autorizado.'), 403
 
     fornecedor = Fornecedor.query.get(fornecedor_id)
     if fornecedor is None:
-        return jsonify(message='Fornecedor nao encontrado.'), 404
+        return jsonify(message='Fornecedor não encontrado.'), 404
 
     payload = request.get_json() or {}
     nota_valor = payload.get('notaHomologacao')
@@ -1220,9 +1303,9 @@ def atualizar_nota_fornecedor(fornecedor_id):
     try:
         nota_float = float(str(nota_valor).replace(',', '.'))
     except (TypeError, ValueError):
-        return jsonify(message='Nota de homologacao invalida.'), 400
+        return jsonify(message='Nota de homologação inválida.'), 400
     if not math.isfinite(nota_float):
-        return jsonify(message='Nota de homologacao invalida.'), 400
+        return jsonify(message='Nota de homologção inválida.'), 400
 
     try:
         registro_manual = NotaFornecedor.query.filter_by(fornecedor_id=fornecedor.id).first()
@@ -1234,8 +1317,8 @@ def atualizar_nota_fornecedor(fornecedor_id):
         db.session.commit()
     except Exception as exc:
         db.session.rollback()
-        print(f'Erro ao atualizar nota de homologacao: {exc}')
-        return jsonify(message='Erro ao atualizar nota de homologacao.'), 500
+        print(f'Erro ao atualizar nota de homologação: {exc}')
+        return jsonify(message='Erro ao atualizar nota de homologação.'), 500
 
     df_homologados = None
     df_controle = None
@@ -1252,13 +1335,14 @@ def atualizar_nota_fornecedor(fornecedor_id):
     fornecedor_payload = _montar_registro_admin(fornecedor, df_homologados, df_controle)
     fornecedor_payload['nota_homologacao'] = nota_float
     return jsonify(
-        message='Nota de homologacao atualizada com sucesso.',
+        message='Nota de homologação atualizada com sucesso.',
         fornecedor=fornecedor_payload
     ), 200
 
 
 @app.route('/api/admin/fornecedores/<int:fornecedor_id>/decisao', methods=['POST', 'OPTIONS'])
-@jwt_required()
+@app.route('/api/admin/fornecedores/<int:fornecedor_id>/decis\u00e3o', methods=['POST', 'OPTIONS'])
+@jwt_required(optional=True)
 def registrar_decisao_fornecedor(fornecedor_id):
     if request.method == 'OPTIONS':
         return '', 204
@@ -1273,7 +1357,7 @@ def registrar_decisao_fornecedor(fornecedor_id):
     status_informado = (payload.get('status') or '').strip().upper()
     status_validos = {'APROVADO', 'REPROVADO', 'EM_ANALISE'}
     if status_informado not in status_validos:
-        return jsonify(message='Status informado invalido.'), 400
+        return jsonify(message='Status informado inválido.'), 400
 
     observacao = (payload.get('observacao') or '').strip()
     nota_referencia_valor = payload.get('notaReferencia')
@@ -1306,7 +1390,7 @@ def registrar_decisao_fornecedor(fornecedor_id):
     except Exception as exc:
         db.session.rollback()
         print(f'Erro ao registrar decisao: {exc}')
-        return jsonify(message='Erro ao registrar decisao do fornecedor.'), 500
+        return jsonify(message='Erro ao registrar decisão do fornecedor.'), 500
 
     df_homologados = None
     df_controle = None
@@ -1323,6 +1407,39 @@ def registrar_decisao_fornecedor(fornecedor_id):
         emailEnviado=email_enviado,
         fornecedor=fornecedor_payload
     ), 200
+
+
+@app.route('/api/admin/fornecedores/<int:fornecedor_id>', methods=['DELETE'])
+@jwt_required()
+def excluir_fornecedor(fornecedor_id):
+    if not _admin_usuario_autorizado():
+        return jsonify(message='Acesso nao autorizado.'), 403
+
+    fornecedor = Fornecedor.query.get(fornecedor_id)
+    if fornecedor is None:
+        return jsonify(message='Fornecedor nao encontrado.'), 404
+
+    try:
+        Documento.query.filter_by(fornecedor_id=fornecedor.id).delete(synchronize_session=False)
+        Homologacao.query.filter_by(fornecedor_id=fornecedor.id).delete(synchronize_session=False)
+        NotaFornecedor.query.filter_by(fornecedor_id=fornecedor.id).delete(synchronize_session=False)
+        db.session.delete(fornecedor)
+        db.session.commit()
+    except Exception as exc:
+        db.session.rollback()
+        print(f'Erro ao excluir fornecedor {fornecedor_id}: {exc}')
+        return jsonify(message='Erro ao excluir fornecedor.'), 500
+
+    pasta_fornecedor = os.path.join(UPLOAD_FOLDER, str(fornecedor.id))
+    if os.path.isdir(pasta_fornecedor):
+        try:
+            shutil.rmtree(pasta_fornecedor)
+        except OSError as exc:
+            print(f'Falha ao remover arquivos do fornecedor {fornecedor.id}: {exc}')
+
+    return jsonify(message='Fornecedor excluido com sucesso.'), 200
+
+
 @app.route('/api/admin/notificacoes', methods=['GET'])
 @jwt_required()
 def painel_admin_notificacoes():
@@ -1716,20 +1833,29 @@ def _enviar_email_decisao(fornecedor, status_informado, observacao):
 </body>
 </html>
 """
-        imagem_path = os.path.join(os.path.dirname(app.root_path), 'static', 'colorida.png')
+        imagem_path = _resolver_logo_path()
         enviar_email(fornecedor.email, assunto, corpo, imagem_path)
         return True
     except Exception as exc:
         print(f'Erro ao enviar e-mail de decisao: {exc}')
         return False
-def enviar_email(destinatario, assunto, corpo, imagem_path):
+def enviar_email(destinatario, assunto, corpo, imagem_path=None):
     try:
-        msg = Message(assunto, recipients=[destinatario], html=corpo)
-        with open(imagem_path, "rb") as img:
-            img_data = img.read()
-            encoded_img = base64.b64encode(img_data).decode('utf-8')
-        corpo_com_imagem = corpo.replace("cid:engeman_logo", f"data:image/png;base64,{encoded_img}")
-        msg.html = corpo_com_imagem
+        msg = Message(
+            assunto,
+            recipients=[destinatario],
+            html=corpo,
+            sender=app.config.get('MAIL_DEFAULT_SENDER'),
+        )
+        caminho_logo = imagem_path or _resolver_logo_path()
+        if caminho_logo and os.path.exists(caminho_logo):
+            with open(caminho_logo, "rb") as img:
+                img_data = img.read()
+                encoded_img = base64.b64encode(img_data).decode('utf-8')
+            msg.html = corpo.replace("cid:engeman_logo", f"data:image/png;base64,{encoded_img}")
+        else:
+            print(f"Aviso: logo padrão não encontrado em {caminho_logo or 'nenhum caminho'}")
+            msg.html = corpo
         mail.send(msg)
     except Exception as e:
         print(f"Erro ao enviar e-mail: {e}")

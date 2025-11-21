@@ -1,4 +1,4 @@
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
 from flask_sqlalchemy import SQLAlchemy
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity, get_jwt
 from flask_mail import Mail, Message
@@ -60,7 +60,14 @@ ALLOWED_CORS_ORIGINS = [
     "https://portalengeman-front.vercel.app",
     "https://portalengeman.vercel.app",
 ]
-CORS(app, resources={r"/api/*": {"origins": ALLOWED_CORS_ORIGINS}})
+CORS(
+    app,
+    resources={r"/api/*": {"origins": ALLOWED_CORS_ORIGINS}},
+    supports_credentials=True,
+    allow_headers=['Content-Type', 'Authorization', 'X-Requested-With'],
+    expose_headers=['Content-Disposition'],
+    methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
+)
 app.config.from_object(Config)
 db.init_app(app)
 
@@ -1438,6 +1445,37 @@ def excluir_fornecedor(fornecedor_id):
             print(f'Falha ao remover arquivos do fornecedor {fornecedor.id}: {exc}')
 
     return jsonify(message='Fornecedor excluido com sucesso.'), 200
+
+
+@app.route('/api/admin/documentos/<int:documento_id>/download', methods=['GET', 'OPTIONS'])
+@jwt_required(optional=True)
+def baixar_documento_admin(documento_id):
+    if request.method == 'OPTIONS':
+        return '', 204
+    if not _admin_usuario_autorizado():
+        return jsonify(message='Acesso nao autorizado.'), 403
+
+    documento = Documento.query.get(documento_id)
+    if documento is None:
+        return jsonify(message='Documento nao encontrado.'), 404
+
+    caminho_arquivo = os.path.join(
+        UPLOAD_FOLDER,
+        str(documento.fornecedor_id),
+        documento.nome_documento
+    )
+    if not os.path.isfile(caminho_arquivo):
+        return jsonify(message='Arquivo do documento nao encontrado.'), 404
+
+    try:
+        return send_file(
+            caminho_arquivo,
+            as_attachment=True,
+            download_name=documento.nome_documento
+        )
+    except Exception as exc:
+        print(f'Erro ao enviar documento {documento_id}: {exc}')
+        return jsonify(message='Erro ao baixar documento.'), 500
 
 
 @app.route('/api/admin/notificacoes', methods=['GET'])

@@ -5,10 +5,12 @@ from flask_mail import Mail, Message
 from config import Config
 from models import db, Fornecedor, Documento, Homologacao, NotaFornecedor
 from werkzeug.security import generate_password_hash, check_password_hash
+import io
 import random
 import base64
 import os
 import shutil
+import mimetypes
 import pandas as pd
 import math
 import unicodedata
@@ -110,9 +112,78 @@ def _ensure_nota_fornecedor_schema():
         print(f'Erro ao ajustar schema de notas_fornecedores: {exc}')
 
 
+def _ensure_documento_schema():
+    try:
+        inspector = inspect(db.engine)
+    except Exception as exc:
+        print(f'Não foi possivel inspecionar o banco para atualizar os documentos: {exc}')
+        return
+    if 'documentos' not in inspector.get_table_names():
+        return
+    existing_columns = {col['name'] for col in inspector.get_columns('documentos')}
+    alter_statements = []
+    if 'mime_type' not in existing_columns:
+        alter_statements.append(('mime_type', 'VARCHAR(255)'))
+    if 'dados_arquivo' not in existing_columns:
+        dialect = db.engine.dialect.name if db.engine else ''
+        if dialect == 'postgresql':
+            blob_type = 'BYTEA'
+        elif dialect in {'mysql', 'mariadb'}:
+            blob_type = 'LONGBLOB'
+        else:
+            blob_type = 'BLOB'
+        alter_statements.append(('dados_arquivo', blob_type))
+    if not alter_statements:
+        return
+    try:
+        with db.engine.begin() as connection:
+            for column_name, ddl in alter_statements:
+                connection.execute(text(f'ALTER TABLE documentos ADD COLUMN {column_name} {ddl}'))
+                print(f'Coluna {column_name} adicionada a documentos')
+    except Exception as exc:
+        print(f'Erro ao ajustar schema de documentos: {exc}')
+
+
+def _backfill_documento_conteudo():
+    try:
+        documentos_sem_conteudo = Documento.query.filter(
+            or_(Documento.dados_arquivo.is_(None), Documento.dados_arquivo == b'')
+        ).all()
+    except Exception as exc:
+        print(f'Falha ao carregar documentos para complementar conteudo: {exc}')
+        return
+    atualizados = 0
+    for documento in documentos_sem_conteudo:
+        caminho = os.path.join(UPLOAD_FOLDER, str(documento.fornecedor_id), documento.nome_documento)
+        if not os.path.isfile(caminho):
+            continue
+        try:
+            with open(caminho, 'rb') as arquivo:
+                dados = arquivo.read()
+        except OSError as exc:
+            print(f'Erro ao ler arquivo do documento {documento.id}: {exc}')
+            continue
+        if not dados:
+            continue
+        documento.dados_arquivo = dados
+        if not documento.mime_type:
+            documento.mime_type = mimetypes.guess_type(documento.nome_documento)[0] or 'application/octet-stream'
+        atualizados += 1
+    if not atualizados:
+        return
+    try:
+        db.session.commit()
+        print(f'Conteudo de {atualizados} documentos atualizado a partir do disco.')
+    except Exception as exc:
+        db.session.rollback()
+        print(f'Falha ao persistir conteudo dos documentos: {exc}')
+
+
 with app.app_context():
     db.create_all()
     _ensure_nota_fornecedor_schema()
+    _ensure_documento_schema()
+    _backfill_documento_conteudo()
 
     
 @app.route('/')
@@ -666,15 +737,32 @@ def enviar_documento():
         pasta_fornecedor = os.path.join(UPLOAD_FOLDER, str(fornecedor_id))
         os.makedirs(pasta_fornecedor, exist_ok=True)
         for arquivo in arquivos:
-            if not allowed_file(arquivo.filename):
-                return jsonify(message=f"Extensão do arquivo não permitida: {arquivo.filename}"), 400
-            filename = secure_filename(arquivo.filename)
+            nome_original = arquivo.filename or ''
+            if not allowed_file(nome_original):
+                return jsonify(message=f"Extensão do arquivo não permitida: {nome_original}"), 400
+            filename = secure_filename(nome_original)
+            if not filename:
+                return jsonify(message="Nome de arquivo inválido."), 400
             caminho_arquivo = os.path.join(pasta_fornecedor, filename)
-            arquivo.save(caminho_arquivo)
+            try:
+                arquivo.stream.seek(0)
+            except Exception:
+                pass
+            conteudo_bytes = arquivo.read()
+            if not conteudo_bytes:
+                return jsonify(message=f"Arquivo vazio ou corrompido: {nome_original}"), 400
+            try:
+                with open(caminho_arquivo, 'wb') as destino:
+                    destino.write(conteudo_bytes)
+            except OSError as exc:
+                return jsonify(message=f"Não foi possivel salvar o arquivo {filename}: {exc}"), 500
+            mime_type = arquivo.mimetype or mimetypes.guess_type(filename)[0] or 'application/octet-stream'
             documento = Documento(
                 nome_documento=filename,
                 categoria=categoria,
-                fornecedor_id=fornecedor.id
+                fornecedor_id=fornecedor.id,
+                mime_type=mime_type,
+                dados_arquivo=conteudo_bytes
             )
             db.session.add(documento)
             lista_arquivos.append(filename)
@@ -1427,9 +1515,6 @@ def excluir_fornecedor(fornecedor_id):
         return jsonify(message='Fornecedor nao encontrado.'), 404
 
     try:
-        Documento.query.filter_by(fornecedor_id=fornecedor.id).delete(synchronize_session=False)
-        Homologacao.query.filter_by(fornecedor_id=fornecedor.id).delete(synchronize_session=False)
-        NotaFornecedor.query.filter_by(fornecedor_id=fornecedor.id).delete(synchronize_session=False)
         db.session.delete(fornecedor)
         db.session.commit()
     except Exception as exc:
@@ -1464,18 +1549,33 @@ def baixar_documento_admin(documento_id):
         str(documento.fornecedor_id),
         documento.nome_documento
     )
-    if not os.path.isfile(caminho_arquivo):
-        return jsonify(message='Arquivo do documento nao encontrado.'), 404
+    if os.path.isfile(caminho_arquivo):
+        try:
+            return send_file(
+                caminho_arquivo,
+                as_attachment=True,
+                download_name=documento.nome_documento,
+                mimetype=documento.mime_type or mimetypes.guess_type(documento.nome_documento)[0] or 'application/octet-stream'
+            )
+        except Exception as exc:
+            print(f'Erro ao enviar documento {documento_id}: {exc}')
+            return jsonify(message='Erro ao baixar documento.'), 500
 
-    try:
-        return send_file(
-            caminho_arquivo,
-            as_attachment=True,
-            download_name=documento.nome_documento
-        )
-    except Exception as exc:
-        print(f'Erro ao enviar documento {documento_id}: {exc}')
-        return jsonify(message='Erro ao baixar documento.'), 500
+    if documento.dados_arquivo:
+        try:
+            buffer = io.BytesIO(documento.dados_arquivo)
+            buffer.seek(0)
+            return send_file(
+                buffer,
+                as_attachment=True,
+                download_name=documento.nome_documento,
+                mimetype=documento.mime_type or mimetypes.guess_type(documento.nome_documento)[0] or 'application/octet-stream'
+            )
+        except Exception as exc:
+            print(f'Erro ao enviar conteudo em memoria para o documento {documento_id}: {exc}')
+            return jsonify(message='Erro ao baixar documento.'), 500
+
+    return jsonify(message='Arquivo do documento nao encontrado.'), 404
 
 
 @app.route('/api/admin/notificacoes', methods=['GET'])
@@ -1902,4 +2002,3 @@ def gerar_token_recuperacao():
     return random.randint(100000, 999999)
 if __name__ == '__main__':
     app.run(debug=True)
-

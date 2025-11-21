@@ -19,9 +19,24 @@ class Fornecedor(db.Model):
     categoria = db.Column(db.String(100), nullable=True)
     data_cadastro = db.Column(db.DateTime, default=datetime.utcnow, nullable=False)
 
-    documentos = db.relationship('Documento', backref='fornecedor', lazy=True)
-    dados_homologacao = db.relationship('Homologacao', backref='fornecedor', lazy=True)
-    nota_admin = db.relationship('NotaFornecedor', backref='fornecedor', uselist=False)
+    documentos = db.relationship(
+        'Documento',
+        backref='fornecedor',
+        lazy=True,
+        cascade='all, delete-orphan'
+    )
+    dados_homologacao = db.relationship(
+        'Homologacao',
+        backref='fornecedor',
+        lazy=True,
+        cascade='all, delete-orphan'
+    )
+    nota_admin = db.relationship(
+        'NotaFornecedor',
+        backref='fornecedor',
+        uselist=False,
+        cascade='all, delete-orphan'
+    )
 
     def __init__(self, nome, email, cnpj, senha, **kwargs):
         super().__init__(**kwargs)
@@ -38,6 +53,8 @@ class Documento(db.Model):
     nome_documento = db.Column(db.String(100), nullable=False)
     categoria = db.Column(db.String(50), nullable=False)
     data_upload = db.Column(db.DateTime, default=datetime.utcnow)
+    mime_type = db.Column(db.String(255), nullable=True)
+    dados_arquivo = db.Column(db.LargeBinary, nullable=True)
 
     fornecedor_id = db.Column(db.Integer, db.ForeignKey('fornecedores.id'), nullable=False)
 

@@ -30,14 +30,37 @@ app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 
 
 def _normalizar_nome_documento(nome):
-    """Remove caracteres não alfanuméricos para permitir comparações tolerantes."""
+    """
+    Normaliza o nome do documento removendo caracteres especiais.
+    
+    Remove todos os caracteres não alfanuméricos e converte para minúsculas,
+    permitindo comparações mais tolerantes entre nomes de arquivos.
+    
+    Args:
+        nome: Nome do documento a ser normalizado
+        
+    Returns:
+        String normalizada contendo apenas caracteres alfanuméricos em minúsculas
+    """
     if not nome:
         return ''
     return ''.join(ch.lower() for ch in str(nome) if ch.isalnum())
 
 
 def _nomes_documento_candidatos(nome):
-    """Gera variações do nome informado para tentar localizar o arquivo no disco."""
+    """
+    Gera variações possíveis do nome do documento para busca no sistema de arquivos.
+    
+    Cria uma lista de variações do nome do arquivo (com underscores, hífens, espaços, etc.)
+    para aumentar as chances de encontrar o arquivo mesmo que tenha sido renomeado
+    ou salvo com formato diferente.
+    
+    Args:
+        nome: Nome original do documento
+        
+    Returns:
+        Lista de strings com variações possíveis do nome do arquivo
+    """
     candidatos = []
 
     def _adicionar(valor):
@@ -57,7 +80,20 @@ def _nomes_documento_candidatos(nome):
 
 
 def _diretorios_documento_candidatos(fornecedor_id):
-    """Lista diretórios relevantes onde os arquivos podem estar armazenados."""
+    """
+    Lista todos os diretórios possíveis onde os documentos podem estar armazenados.
+    
+    Gera uma lista completa de caminhos onde o sistema deve procurar arquivos,
+    incluindo diretórios padrão de uploads, pastas de fornecedores específicos,
+    e diretórios alternativos para garantir que arquivos sejam encontrados mesmo
+    após mudanças na estrutura do projeto.
+    
+    Args:
+        fornecedor_id: ID do fornecedor para buscar em pastas específicas
+        
+    Returns:
+        Lista de caminhos absolutos onde os documentos podem estar localizados
+    """
     diretorios = []
     vistos = set()
 
@@ -97,8 +133,18 @@ def _diretorios_documento_candidatos(fornecedor_id):
 
 def _carregar_documento_de_fontes(documento):
     """
-    Procura o conteúdo do documento em diferentes diretórios do projeto para cenários
-    em que o arquivo tenha sido movido ou o disco volátil tenha sido reiniciado.
+    Procura e carrega o conteúdo de um documento em diferentes locais do sistema.
+    
+    Busca o arquivo do documento em múltiplos diretórios e com variações de nome,
+    garantindo que documentos sejam encontrados mesmo após mudanças na estrutura
+    de pastas ou renomeação de arquivos. Primeiro tenta encontrar por nome exato,
+    depois por normalização de caracteres.
+    
+    Args:
+        documento: Objeto Documento do banco de dados
+        
+    Returns:
+        Tupla (caminho_arquivo, dados_bytes) ou (None, None) se não encontrado
     """
     nomes_candidatos = _nomes_documento_candidatos(documento.nome_documento)
     diretorios = _diretorios_documento_candidatos(documento.fornecedor_id)
@@ -151,7 +197,19 @@ def _carregar_documento_de_fontes(documento):
 
 
 def _armazenar_documento_no_disco(documento, conteudo):
-    """Garante que exista uma cópia do documento no diretório esperado."""
+    """
+    Salva o conteúdo do documento no sistema de arquivos.
+    
+    Cria o diretório do fornecedor se necessário e salva o arquivo no local padrão
+    de uploads, garantindo que haja uma cópia física do documento no disco.
+    
+    Args:
+        documento: Objeto Documento do banco de dados
+        conteudo: Bytes do conteúdo do arquivo a ser salvo
+        
+    Returns:
+        Caminho absoluto do arquivo salvo ou None em caso de erro
+    """
     if not conteudo or documento is None or documento.fornecedor_id is None:
         return None
     destino_dir = os.path.join(UPLOAD_FOLDER, str(documento.fornecedor_id))
@@ -167,7 +225,19 @@ def _armazenar_documento_no_disco(documento, conteudo):
 
 
 def _resolver_logo_path(nome_arquivo='colorida.png'):
-    """Procura o logo padrão em diferentes diretórios do projeto."""
+    """
+    Localiza o arquivo de logo da empresa em diferentes diretórios do projeto.
+    
+    Busca o logo em vários locais possíveis (static, raiz do projeto, etc.)
+    para garantir que seja encontrado independente da estrutura de pastas.
+    Usado principalmente para anexar o logo em e-mails enviados pelo sistema.
+    
+    Args:
+        nome_arquivo: Nome do arquivo de logo (padrão: 'colorida.png')
+        
+    Returns:
+        Caminho absoluto do logo se encontrado, None caso contrário
+    """
     candidatos = [
         os.path.join(app.root_path, 'static', nome_arquivo),
         os.path.join(os.path.dirname(app.root_path), 'static', nome_arquivo),
@@ -191,6 +261,9 @@ ADMIN_ALLOWED_EMAILS = {
 }
 
 ADMIN_PASSWORD = 'admin123'
+
+# Configuração de CORS mais permissiva para produção
+# Permite requisições do Render, Vercel e localhost
 ALLOWED_CORS_ORIGINS = [
     "http://localhost:3000",
     "http://127.0.0.1:3000",
@@ -198,13 +271,43 @@ ALLOWED_CORS_ORIGINS = [
     "http://127.0.0.1:3001",
     "https://portalengeman-front.vercel.app",
     "https://portalengeman.vercel.app",
+    "https://portalengeman-front.onrender.com",
+    "https://portalengeman.onrender.com",
 ]
+
+# Permite qualquer origem do Render ou Vercel em produção
+RENDER_DOMAIN = os.environ.get('RENDER_EXTERNAL_URL', '')
+VERCEL_DOMAIN = os.environ.get('VERCEL_URL', '')
+
+if RENDER_DOMAIN:
+    ALLOWED_CORS_ORIGINS.append(RENDER_DOMAIN)
+if VERCEL_DOMAIN:
+    ALLOWED_CORS_ORIGINS.append(f"https://{VERCEL_DOMAIN}")
+
+# Em produção, permite também domínios do Render e Vercel dinamicamente
 CORS(
     app,
-    resources={r"/api/*": {"origins": ALLOWED_CORS_ORIGINS}},
+    resources={
+        r"/api/*": {
+            "origins": ALLOWED_CORS_ORIGINS,
+            "methods": ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+            "allow_headers": [
+                "Content-Type",
+                "Authorization",
+                "X-Requested-With",
+                "Accept",
+                "Origin",
+                "Access-Control-Request-Method",
+                "Access-Control-Request-Headers"
+            ],
+            "expose_headers": ["Content-Disposition", "Content-Type"],
+            "supports_credentials": True,
+            "max_age": 3600
+        }
+    },
     supports_credentials=True,
-    allow_headers=['Content-Type', 'Authorization', 'X-Requested-With'],
-    expose_headers=['Content-Disposition'],
+    allow_headers=['Content-Type', 'Authorization', 'X-Requested-With', 'Accept', 'Origin'],
+    expose_headers=['Content-Disposition', 'Content-Type'],
     methods=['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS']
 )
 app.config.from_object(Config)
@@ -214,9 +317,60 @@ jwt = JWTManager(app)
 mail.init_app(app)
 migrate = Migrate(app, db)
 
-""""Função para inspecionar os dados e notas no banco de dados dos fornecedores pela página de admin."""
+
+def _adicionar_headers_cors(response):
+    """
+    Adiciona headers CORS necessários em uma resposta.
+    
+    Verifica a origem da requisição e adiciona headers CORS apropriados,
+    permitindo domínios do Render, Vercel e localhost.
+    
+    Args:
+        response: Objeto Response do Flask
+        
+    Returns:
+        Response com headers CORS adicionados
+    """
+    origin = request.headers.get('Origin')
+    
+    # Se já tem o header, não adiciona novamente (evita duplicação)
+    if 'Access-Control-Allow-Origin' in response.headers:
+        return response
+    
+    # Verifica se a origem está na lista permitida
+    if origin:
+        if origin in ALLOWED_CORS_ORIGINS:
+            response.headers.add('Access-Control-Allow-Origin', origin)
+        elif '.onrender.com' in origin or '.vercel.app' in origin:
+            # Permite domínios do Render e Vercel dinamicamente
+            response.headers.add('Access-Control-Allow-Origin', origin)
+        elif 'localhost' in origin or '127.0.0.1' in origin:
+            # Permite localhost em desenvolvimento
+            response.headers.add('Access-Control-Allow-Origin', origin)
+    
+    # Adiciona outros headers CORS necessários
+    if 'Access-Control-Allow-Credentials' not in response.headers:
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+    if 'Access-Control-Allow-Methods' not in response.headers:
+        response.headers.add('Access-Control-Allow-Methods', 'GET, POST, PUT, PATCH, DELETE, OPTIONS')
+    if 'Access-Control-Allow-Headers' not in response.headers:
+        response.headers.add('Access-Control-Allow-Headers', 
+                            'Content-Type, Authorization, X-Requested-With, Accept, Origin')
+    if 'Access-Control-Expose-Headers' not in response.headers:
+        response.headers.add('Access-Control-Expose-Headers', 'Content-Disposition, Content-Type')
+    
+    return response
+
 
 def _ensure_nota_fornecedor_schema():
+    """
+    Garante que a tabela notas_fornecedores tenha todas as colunas necessárias.
+    
+    Inspeciona o schema do banco de dados e adiciona colunas faltantes na tabela
+    notas_fornecedores, como status_decisao, observacao_admin, nota_referencia,
+    email_enviado e decisao_atualizada_em. Esta função permite atualizações
+    incrementais do schema sem precisar de migrações complexas.
+    """
     try:
         inspector = inspect(db.engine)
     except Exception as exc:
@@ -250,6 +404,13 @@ def _ensure_nota_fornecedor_schema():
 
 
 def _ensure_documento_schema():
+    """
+    Garante que a tabela documentos tenha todas as colunas necessárias.
+    
+    Verifica e adiciona colunas faltantes na tabela documentos, como mime_type
+    (tipo MIME do arquivo) e dados_arquivo (conteúdo binário). O tipo de dados
+    para dados_arquivo varia conforme o banco de dados (PostgreSQL, MySQL, etc.).
+    """
     try:
         inspector = inspect(db.engine)
     except Exception as exc:
@@ -282,6 +443,14 @@ def _ensure_documento_schema():
 
 
 def _backfill_documento_conteudo():
+    """
+    Recupera o conteúdo de documentos que estão no banco sem dados binários.
+    
+    Busca documentos que existem no banco de dados mas não têm o conteúdo armazenado
+    (dados_arquivo vazio ou None). Tenta recuperar esses arquivos do disco usando
+    a função _carregar_documento_de_fontes e atualiza o banco de dados com o conteúdo
+    encontrado. Também define o mime_type se não estiver definido.
+    """
     try:
         documentos_sem_conteudo = Documento.query.filter(
             or_(Documento.dados_arquivo.is_(None), Documento.dados_arquivo == b'')
@@ -318,17 +487,43 @@ with app.app_context():
     _backfill_documento_conteudo()
 
     
+@app.after_request
+def after_request(response):
+    """
+    Adiciona headers CORS a todas as respostas automaticamente.
+    
+    Este decorator garante que todas as respostas tenham os headers CORS
+    necessários, permitindo requisições cross-origin do frontend.
+    """
+    return _adicionar_headers_cors(response)
+
+
 @app.route('/')
 def home():
+    """
+    Endpoint raiz da aplicação.
+    
+    Retorna uma mensagem de boas-vindas simples para verificar se a API está funcionando.
+    
+    Returns:
+        String de boas-vindas
+    """
     return "Bem-vindo ao Portal de Fornecedores!"
 
 
 
-"""Endpoint de cadastro, exigindo o cadastro com o nome, cnpj, e-mail e senha."""
-
-
 @app.route('/api/cadastro', methods=['POST'])
 def cadastrar_fornecedor():
+    """
+    Endpoint para cadastro de novos fornecedores.
+    
+    Recebe dados de cadastro (nome, CNPJ, e-mail e senha) e cria um novo
+    fornecedor no banco de dados. A senha é criptografada antes de ser armazenada.
+    Valida se todos os campos obrigatórios foram fornecidos.
+    
+    Returns:
+        JSON com mensagem de sucesso (201) ou erro (400/500)
+    """
     try:
         data = request.get_json() or {}
         print(data)
@@ -349,10 +544,18 @@ def cadastrar_fornecedor():
         return jsonify(message="Erro ao cadastrar fornecedor: " + str(e)), 500
     
 
-"""Endpoint que busca e verifica se o e-mail e senha já possui cadastro"""
-    
 @app.route('/api/login', methods=['POST'])
 def login():
+    """
+    Endpoint de autenticação de fornecedores.
+    
+    Valida as credenciais (e-mail e senha) do fornecedor e retorna um token JWT
+    de acesso se as credenciais forem válidas. O token é usado para autenticar
+    requisições subsequentes do fornecedor.
+    
+    Returns:
+        JSON com access_token (200) ou mensagem de erro (400/401/500)
+    """
     try:
         data = request.get_json() or {}
         email = data.get("email")
@@ -379,10 +582,18 @@ def login():
     
 
 
-"""Endpoint que gera um tokende 6 digitos para recuperação de senha, sendo enviada via e-mail"""   
-    
 @app.route('/api/recuperar-senha', methods=['POST'])
 def recuperar_senha():
+    """
+    Endpoint para solicitar recuperação de senha.
+    
+    Gera um token de 6 dígitos, armazena no banco de dados com validade de 10 minutos
+    e envia por e-mail ao fornecedor. O token pode ser usado posteriormente para
+    redefinir a senha através do endpoint /api/redefinir-senha.
+    
+    Returns:
+        JSON com mensagem de sucesso (200) ou erro (404/500)
+    """
     try:
         data = request.get_json()
         fornecedor = Fornecedor.query.filter_by(email=data['email']).first()
@@ -455,10 +666,17 @@ def recuperar_senha():
         return jsonify(message="Erro ao recuperar senha: " + str(e)), 500
     
 
-"""Endpoint que valida o token para criar uma nova senha, sendo insirida no banco de dados substituindo a anterior"""    
-    
 @app.route("/api/validar-token", methods=["POST"])
 def validar_token():
+    """
+    Endpoint para validar token de recuperação de senha.
+    
+    Verifica se o token fornecido existe no banco de dados e ainda não expirou
+    (válido por 10 minutos). Usado antes de permitir a redefinição de senha.
+    
+    Returns:
+        JSON com mensagem de validação (200) ou erro (400/404/500)
+    """
     try:
         data = request.get_json()
         token = data.get("token")
@@ -474,10 +692,17 @@ def validar_token():
         print(f"Erro ao validar token: {e}")
         return jsonify(message="Erro ao validar token"), 500
     
-"""Endpoint que ajusta a senha após validação do token"""    
-    
 @app.route("/api/redefinir-senha", methods=["POST"])
 def redefinir_senha():
+    """
+    Endpoint para redefinir a senha do fornecedor.
+    
+    Valida o token de recuperação e, se válido, atualiza a senha do fornecedor
+    no banco de dados. Após a redefinição, o token é invalidado.
+    
+    Returns:
+        JSON com mensagem de sucesso (200) ou erro (400/404)
+    """
     data = request.get_json()
     token = data.get("token")
     nova_senha = data.get("nova_senha")
@@ -495,9 +720,27 @@ def redefinir_senha():
     return jsonify(message="Senha redefinida com sucesso"), 200
 
 
-"""Endpoint que envia o assunto que o usário descreve, a função solicita o nome, email, o assunto e mensagem necessária, tendo como e-mail de envio o NOTIFICAÇÃO SUPRIMENTOS"""
-@app.route('/api/contato', methods=['POST'])
+@app.route('/api/contato', methods=['POST', 'OPTIONS'])
 def contato():
+    """
+    Endpoint para envio de mensagens de contato.
+    
+    Recebe dados de contato (nome, e-mail, assunto, mensagem) e envia um e-mail
+    formatado para a equipe administrativa (lucas.mateus@engeman.net) com as
+    informações do fornecedor que está entrando em contato.
+    
+    Returns:
+        JSON com mensagem de sucesso (200) ou erro (400/500)
+    """
+    # Tratamento de requisições OPTIONS (preflight CORS)
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
+    
     try:
         data = request.get_json()
         nome = data.get("nome")
@@ -718,18 +961,44 @@ def contato():
             corpo=corpo_email,
             imagem_path=imagem_path
         )
-        return jsonify(message="Mensagem enviada com sucesso!"), 200
+        response = jsonify(message="Mensagem enviada com sucesso!")
+        return _adicionar_headers_cors(response), 200
     except Exception as e:
         print(f"Erro ao enviar mensagem: {e}")
-        return jsonify(message="Erro ao enviar a mensagem."), 500
+        response = jsonify(message="Erro ao enviar a mensagem.")
+        return _adicionar_headers_cors(response), 500
     
-"""Função que permite alguns tipos de documentos, sendo exigido apenas o que se mostra na tela"""
 def allowed_file(filename):
+    """
+    Verifica se o arquivo possui uma extensão permitida pelo sistema.
+    
+    Valida se o nome do arquivo termina com uma das extensões aceitas:
+    PDF, DOC, DOCX, JPG, JPEG, PNG, XLSX, CSV. Usado para validar uploads
+    de documentos antes de processá-los.
+    
+    Args:
+        filename: Nome do arquivo a ser validado
+        
+    Returns:
+        True se a extensão for permitida, False caso contrário
+    """
     allowed_extensions = ['pdf', 'doc', 'docx', 'jpg', 'jpeg', 'png', 'xlsx', 'csv']
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in allowed_extensions
 
-"""Função que busca os dados das planilhas no CLAF."""
 def _obter_caminho_claf():
+    """
+    Localiza o arquivo CLAF.xlsx em diferentes diretórios do projeto.
+    
+    Busca a planilha CLAF (Classificação de Materiais/Serviços) em vários
+    locais possíveis. Esta planilha contém informações sobre categorias de
+    materiais e documentos necessários para cada categoria.
+    
+    Returns:
+        Caminho absoluto do arquivo CLAF.xlsx
+        
+    Raises:
+        FileNotFoundError: Se o arquivo não for encontrado em nenhum local
+    """
     candidatos = [
         os.path.join(app.root_path, 'uploads', 'CLAF.xlsx'),
         os.path.join(app.root_path, '..', 'uploads', 'CLAF.xlsx'),
@@ -745,6 +1014,18 @@ def _obter_caminho_claf():
 
 
 def _resolver_planilha(nome_arquivo):
+    """
+    Localiza uma planilha Excel em diferentes diretórios do projeto.
+    
+    Busca um arquivo de planilha (geralmente .xlsx) em vários locais possíveis,
+    permitindo flexibilidade na organização dos arquivos do projeto.
+    
+    Args:
+        nome_arquivo: Nome do arquivo de planilha a ser localizado
+        
+    Returns:
+        Caminho absoluto do arquivo se encontrado, None caso contrário
+    """
     candidatos = [
         os.path.join(app.root_path, 'uploads', nome_arquivo),
         os.path.join(app.root_path, '..', 'static', nome_arquivo),
@@ -759,9 +1040,20 @@ def _resolver_planilha(nome_arquivo):
     return None
 
 
-"""Tira qualquer caracteres especiais do texto."""
-
 def _normalizar_texto(valor):
+    """
+    Normaliza um texto removendo acentos e caracteres especiais.
+    
+    Remove acentos, caracteres combinantes Unicode, normaliza espaços em branco
+    e converte para maiúsculas. Usado para comparações de texto que devem ser
+    tolerantes a diferenças de acentuação e formatação.
+    
+    Args:
+        valor: Valor a ser normalizado (pode ser string, número, NaN, etc.)
+        
+    Returns:
+        String normalizada em maiúsculas, sem acentos e com espaços normalizados
+    """
     if valor is None:
         return ''
     if isinstance(valor, str):
@@ -780,11 +1072,36 @@ def _normalizar_texto(valor):
 
 
 def _normalizar_chave(valor):
+    """
+    Cria uma chave normalizada a partir de um valor, removendo tudo exceto alfanuméricos.
+    
+    Normaliza o texto e remove todos os caracteres que não sejam letras ou números,
+    criando uma chave simples para comparações e indexação.
+    
+    Args:
+        valor: Valor a ser convertido em chave
+        
+    Returns:
+        String contendo apenas caracteres alfanuméricos em maiúsculas
+    """
     texto = _normalizar_texto(valor)
     return ''.join(ch for ch in texto if ch.isalnum())
 
 
 def _contar_valores_textuais(serie):
+    """
+    Conta quantos valores não vazios existem em uma série do pandas.
+    
+    Ignora valores NaN e strings vazias, contando apenas valores que tenham
+    conteúdo textual real. Usado para determinar qual coluna de uma planilha
+    tem mais dados úteis.
+    
+    Args:
+        serie: Série do pandas a ser analisada
+        
+    Returns:
+        Número inteiro representando a quantidade de valores não vazios
+    """
     contador = 0
     for valor in serie.dropna():
         if isinstance(valor, str) and valor.strip():
@@ -797,6 +1114,23 @@ def _contar_valores_textuais(serie):
 
 
 def _colunas_por_candidatos(df, candidatos, fallback_indices=None, max_count=None):
+    """
+    Encontra colunas em um DataFrame que correspondem a nomes de candidatos.
+    
+    Busca colunas na planilha que correspondem aos nomes fornecidos (normalizados),
+    com fallback para índices específicos se nenhuma correspondência for encontrada.
+    Se ainda assim não encontrar, retorna a coluna com mais conteúdo textual.
+    Usado para localizar colunas em planilhas mesmo quando os nomes variam.
+    
+    Args:
+        df: DataFrame do pandas a ser analisado
+        candidatos: Lista de nomes de colunas desejados
+        fallback_indices: Lista de índices de colunas como fallback
+        max_count: Número máximo de colunas a retornar
+        
+    Returns:
+        Lista de nomes de colunas encontradas
+    """
     encontrados = []
     mapa = {}
     for idx, coluna in enumerate(df.columns):
@@ -850,11 +1184,27 @@ CLAF_VALORES_IGNORADOS = {
 }
 
 
-"""Endpoint que permite enviar os documentos com base na categoria selecionada, deixando registrado no banco de dados o nome do fornecedor, seu id, e-mail e documentos enviados. 
-Tendo função que limita o tamanho do arquivo, retornando a mensagem."""
-
-@app.route('/api/envio-documento', methods=['POST'])
+@app.route('/api/envio-documento', methods=['POST', 'OPTIONS'])
 def enviar_documento():
+    """
+    Endpoint para upload de documentos pelos fornecedores.
+    
+    Recebe um ou mais arquivos de um fornecedor, valida as extensões permitidas,
+    salva no disco e no banco de dados, e envia notificação por e-mail à equipe
+    administrativa. Os arquivos são organizados em pastas por fornecedor.
+    
+    Returns:
+        JSON com lista de arquivos enviados (200) ou erro (400/404/500)
+    """
+    # Tratamento de requisições OPTIONS (preflight CORS)
+    if request.method == 'OPTIONS':
+        response = jsonify({})
+        response.headers.add('Access-Control-Allow-Origin', request.headers.get('Origin', '*'))
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Requested-With')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        response.headers.add('Access-Control-Allow-Credentials', 'true')
+        return response, 200
+    
     try:
         fornecedor_id = request.form.get('fornecedor_id')
         categoria = request.form.get('categoria')
@@ -909,15 +1259,24 @@ def enviar_documento():
             link_documento=", ".join(link_documentos),
             arquivos_paths=arquivos_paths
         )
-        return jsonify(message="Documentos enviados com sucesso", enviados=lista_arquivos), 200
+        response = jsonify(message="Documentos enviados com sucesso", enviados=lista_arquivos)
+        return _adicionar_headers_cors(response), 200
     except Exception as e:
-        return jsonify(message="Erro ao enviar documentos: " + str(e)), 500
+        response = jsonify(message="Erro ao enviar documentos: " + str(e))
+        return _adicionar_headers_cors(response), 500
     
 
-"""Endpoint que exige os documentos necessários com base na categoria escolhida pelo fornecedor"""  
-  
 @app.route('/api/documentos-necessarios', methods=['POST'])
 def documentos_necessarios():
+    """
+    Endpoint que retorna a lista de documentos necessários para uma categoria.
+    
+    Consulta a planilha CLAF para encontrar quais documentos são exigidos
+    para a categoria de material/serviço informada pelo fornecedor.
+    
+    Returns:
+        JSON com lista de documentos necessários (200) ou erro (400/500)
+    """
     try:
         data = request.get_json() or {}
         categoria = (data.get('categoria') or '').strip()
@@ -978,10 +1337,17 @@ def documentos_necessarios():
     except Exception as e:
         return jsonify(message="Erro ao consultar documentos: " + str(e)), 500
     
-"""Endpoint que busca na planilha CLAF as colunas necessárias das documentações por categoria"""
-
 @app.route('/api/categorias', methods=['GET'])
 def listar_categorias():
+    """
+    Endpoint que lista todas as categorias disponíveis na planilha CLAF.
+    
+    Lê a planilha CLAF, extrai todas as categorias de materiais/serviços únicas,
+    remove valores genéricos e retorna uma lista ordenada para seleção no frontend.
+    
+    Returns:
+        JSON com lista de categorias e total (200) ou erro (500)
+    """
     try:
         claf_path = _obter_caminho_claf()
         df = pd.read_excel(claf_path, header=0)
@@ -1018,13 +1384,21 @@ def listar_categorias():
     except Exception as exc:
         return jsonify(message="Erro ao listar categorias: " + str(exc)), 500
 
-"""Endpoint que busca os dados de homologação do fornecedor com base nas colunas das planilhas, 
-caso não tenha ele retorna que o fornecedor não foi encontrado, 
-se caso tenha ele calcula a sua média iqf com base nas quantidades de notas registrada no mês."""
-
-
 @app.route('/api/dados-homologacao', methods=['GET'])
 def consultar_dados_homologacao():
+    """
+    Endpoint que consulta dados de homologação de um fornecedor.
+    
+    Busca informações de homologação nas planilhas (fornecedores_homologados.xlsx
+    e atendimento controle_qualidade.xlsx), calcula média IQF baseada nas notas
+    do mês e determina o status final (APROVADO, REPROVADO, EM_ANALISE).
+    
+    Query Params:
+        fornecedor_nome: Nome do fornecedor a ser consultado
+        
+    Returns:
+        JSON com dados completos de homologação (200) ou erro (400/404/500)
+    """
     try:
         fornecedor_nome = request.args.get('fornecedor_nome', type=str)
 
@@ -1147,11 +1521,19 @@ def consultar_dados_homologacao():
         return jsonify(message="Erro ao consultar dados de homologação", error_details=str(e)), 500
 
 
-"""Endpoint que calcula e resume os dados dos fornecedores como: nota iqf e nota de homologação."""
-
 @app.route('/api/portal/resumo', methods=['GET'])
 @jwt_required()
 def portal_resumo():
+    """
+    Endpoint que retorna resumo completo do fornecedor autenticado.
+    
+    Retorna um resumo consolidado com todas as informações relevantes do fornecedor:
+    status de homologação, notas IQF, observações, documentos enviados, etc.
+    Requer autenticação JWT válida.
+    
+    Returns:
+        JSON com objeto resumo completo (200) ou erro (400/404/500)
+    """
     identidade = get_jwt_identity()
     try:
         fornecedor_id = int(identidade)
@@ -1172,6 +1554,19 @@ def portal_resumo():
     return jsonify(resumo=resumo), 200
 
 def _normalize_text(value):
+    """
+    Normaliza um texto para comparação, removendo acentos e caracteres especiais.
+    
+    Versão alternativa de normalização que converte para minúsculas e remove
+    apenas caracteres de marcação (Mn), mantendo espaços. Usada para comparações
+    de nomes de fornecedores entre planilhas e banco de dados.
+    
+    Args:
+        value: Valor a ser normalizado
+        
+    Returns:
+        String normalizada em minúsculas, sem acentos, apenas com alfanuméricos e espaços
+    """
     if value is None:
         return ''
     normalized = ''.join(
@@ -1182,6 +1577,16 @@ def _normalize_text(value):
     return ' '.join(normalized.split())
 
 def _carregar_planilhas_homologacao():
+    """
+    Carrega as planilhas de homologação e controle de qualidade.
+    
+    Localiza e carrega duas planilhas essenciais: fornecedores_homologados.xlsx
+    (com dados de homologação) e atendimento controle_qualidade.xlsx (com notas IQF).
+    Normaliza os nomes das colunas para facilitar o acesso aos dados.
+    
+    Returns:
+        Tupla (df_homologados, df_controle) ou (None, None) se não encontradas
+    """
     path_homologados = _resolver_planilha('fornecedores_homologados.xlsx')
     path_controle = _resolver_planilha('atendimento controle_qualidade.xlsx')
     if not path_homologados or not path_controle:
@@ -1202,6 +1607,19 @@ def _carregar_planilhas_homologacao():
         return None, None
 
 def _to_float(value):
+    """
+    Converte um valor para float de forma segura.
+    
+    Tenta converter o valor para float, retornando None se não for possível
+    ou se o valor for infinito/NaN. Usado para processar notas e valores numéricos
+    de planilhas que podem vir em formatos variados.
+    
+    Args:
+        value: Valor a ser convertido (pode ser string, número, None, etc.)
+        
+    Returns:
+        Float válido ou None se a conversão não for possível
+    """
     try:
         if value in (None, '', 'nan'):
             return None
@@ -1212,9 +1630,21 @@ def _to_float(value):
     except (TypeError, ValueError):
         return None
     
-"""Função que calcula a média iqf total de fornecedores com base nas notas lançadas no mês"""
-
 def _calcular_media_iqf_controle(fornecedor_nome_planilha, fornecedor_nome_busca, df_controle):
+    """
+    Calcula a média das notas IQF de um fornecedor na planilha de controle de qualidade.
+    
+    Busca todas as ocorrências do fornecedor na planilha de controle, calcula a média
+    das notas válidas e retorna também o total de notas e observações associadas.
+    
+    Args:
+        fornecedor_nome_planilha: Nome do fornecedor como aparece na planilha
+        fornecedor_nome_busca: Nome alternativo para busca (fallback)
+        df_controle: DataFrame da planilha de controle de qualidade
+        
+    Returns:
+        Tupla (media_iqf, total_notas, observacoes) ou (None, 0, []) se não encontrado
+    """
     if df_controle is None or df_controle.empty:
         return None, 0, []
     if 'nome_agente' not in df_controle.columns:
@@ -1236,9 +1666,22 @@ def _calcular_media_iqf_controle(fornecedor_nome_planilha, fornecedor_nome_busca
         observacoes = subset['observacao'].dropna().astype(str).tolist()
     return media, total, observacoes
 
-"""Função com base na nota determina se o fornecedor está aprovado, reprovado ou em análise"""
-
 def _determinar_status_final(aprovado_valor, nota_homologacao, iqf_calculada, nota_iqf_planilha):
+    """
+    Determina o status final de homologação baseado em múltiplos critérios.
+    
+    Analisa as notas e o valor de aprovação para determinar se o fornecedor está
+    APROVADO, REPROVADO ou EM_ANALISE. Qualquer nota abaixo de 70 resulta em reprovação.
+    
+    Args:
+        aprovado_valor: Valor 'S' ou 'N' da planilha de homologados
+        nota_homologacao: Nota de homologação do fornecedor
+        iqf_calculada: Média IQF calculada a partir do controle de qualidade
+        nota_iqf_planilha: Nota IQF da planilha de homologados
+        
+    Returns:
+        String com o status: 'APROVADO', 'REPROVADO' ou 'EM_ANALISE'
+    """
     for valor in (iqf_calculada, nota_iqf_planilha, nota_homologacao):
         valor_float = _to_float(valor)
         if valor_float is not None and valor_float < 70:
@@ -1252,9 +1695,22 @@ def _determinar_status_final(aprovado_valor, nota_homologacao, iqf_calculada, no
 
 
 
-"""Função que monta os status atual em tempo real do fornecedor"""
-
 def _montar_registro_admin(fornecedor, df_homologados, df_controle):
+    """
+    Monta um registro completo de fornecedor para a área administrativa.
+    
+    Consolida informações do banco de dados, planilhas de homologação e controle
+    de qualidade, incluindo notas manuais do admin, status, documentos e datas.
+    Usado para exibir dados detalhados na interface administrativa.
+    
+    Args:
+        fornecedor: Objeto Fornecedor do banco de dados
+        df_homologados: DataFrame da planilha de fornecedores homologados
+        df_controle: DataFrame da planilha de controle de qualidade
+        
+    Returns:
+        Dicionário com todas as informações consolidadas do fornecedor
+    """
     nota_homologacao = None
     nota_manual = getattr(fornecedor, 'nota_admin', None)
     status_manual = None
@@ -1356,9 +1812,22 @@ def _montar_registro_admin(fornecedor, df_homologados, df_controle):
         'data_cadastro': fornecedor.data_cadastro.isoformat() if fornecedor.data_cadastro else None
     }
 
-"""Função que resume as médias e as ultimas notificações dos fornecedores"""
-
 def _montar_resumo_portal(fornecedor, df_homologados, df_controle):
+    """
+    Monta um resumo simplificado do fornecedor para o portal do fornecedor.
+    
+    Cria um resumo formatado com as informações mais relevantes para o fornecedor
+    visualizar no seu portal: status, notas, feedback, próxima reavaliação, etc.
+    Formata os dados de forma amigável para exibição no frontend.
+    
+    Args:
+        fornecedor: Objeto Fornecedor do banco de dados
+        df_homologados: DataFrame da planilha de fornecedores homologados
+        df_controle: DataFrame da planilha de controle de qualidade
+        
+    Returns:
+        Dicionário com resumo formatado para o portal do fornecedor
+    """
     info_admin = _montar_registro_admin(fornecedor, df_homologados, df_controle)
     ocorrencias = [
         str(item).strip()
@@ -1416,9 +1885,16 @@ def _montar_resumo_portal(fornecedor, df_homologados, df_controle):
     }
     return resumo
 
-"""Função que autoriza os e-mails necessários para página de admin"""
-
 def _admin_usuario_autorizado():
+    """
+    Verifica se o usuário autenticado tem permissões de administrador.
+    
+    Valida se o e-mail do usuário está na lista de e-mails permitidos (ADMIN_ALLOWED_EMAILS)
+    e se o token JWT contém a role 'admin'. Usado para proteger endpoints administrativos.
+    
+    Returns:
+        True se o usuário é admin autorizado, False caso contrário
+    """
     identidade = get_jwt_identity()
     claims = get_jwt()
     if identidade is None:
@@ -1432,10 +1908,18 @@ def _admin_usuario_autorizado():
     return True
 
 
-"""Função que autoriza entrar na página com e-mail e senha de admin """
-
 @app.route('/api/admin/login', methods=['POST'])
 def admin_login():
+    """
+    Endpoint de login para administradores.
+    
+    Autentica administradores usando e-mail e senha. O e-mail deve estar na lista
+    de e-mails permitidos e a senha deve corresponder à senha administrativa.
+    Retorna um token JWT com role 'admin' para acesso aos endpoints administrativos.
+    
+    Returns:
+        JSON com access_token e email (200) ou erro (401/500)
+    """
     try:
         data = request.get_json() or {}
         email = (data.get('email') or '').strip().lower()
@@ -1451,6 +1935,15 @@ def admin_login():
 @app.route('/api/admin/dashboard', methods=['GET'])
 @jwt_required()
 def painel_admin_dashboard():
+    """
+    Endpoint que retorna estatísticas gerais para o dashboard administrativo.
+    
+    Calcula totais de fornecedores cadastrados, documentos enviados e distribuição
+    de status (aprovados, reprovados, em análise). Requer autenticação de admin.
+    
+    Returns:
+        JSON com estatísticas do dashboard (200) ou erro (403/500)
+    """
     if not _admin_usuario_autorizado():
         return jsonify(message='Acesso nao autorizado.'), 403
     try:
@@ -1475,11 +1968,22 @@ def painel_admin_dashboard():
         print(f'Erro no dashboard admin: {exc}')
         return jsonify(message='Erro ao gerar dashboard administrativo'), 500
     
-"""Função que autoriza o usúario com base no e-mail"""
-
 @app.route('/api/admin/fornecedores', methods=['GET'])
 @jwt_required()
 def painel_admin_fornecedores():
+    """
+    Endpoint que lista todos os fornecedores com informações completas.
+    
+    Retorna lista de todos os fornecedores cadastrados, com opção de busca por nome ou CNPJ.
+    Cada fornecedor inclui dados consolidados de homologação, notas e documentos.
+    Requer autenticação de admin.
+    
+    Query Params:
+        search: Termo opcional para buscar por nome ou CNPJ
+        
+    Returns:
+        JSON com lista de fornecedores (200) ou erro (403/500)
+    """
     if not _admin_usuario_autorizado():
         return jsonify(message='Acesso não autorizado.'), 403
     try:
@@ -1507,11 +2011,22 @@ def painel_admin_fornecedores():
         return jsonify(message='Erro ao listar fornecedores'), 500
 
 
-"""Função que permite excluir, alterar e deletar nota de homologação do fornecedor"""
-
 @app.route('/api/admin/fornecedores/<int:fornecedor_id>/notas', methods=['PATCH', 'POST', 'OPTIONS'])
 @jwt_required(optional=True)
 def atualizar_nota_fornecedor(fornecedor_id):
+    """
+    Endpoint para atualizar a nota de homologação de um fornecedor.
+    
+    Permite que administradores atualizem manualmente a nota de homologação de um
+    fornecedor. A nota é armazenada na tabela notas_fornecedores e sobrescreve
+    valores da planilha. Requer autenticação de admin.
+    
+    Args:
+        fornecedor_id: ID do fornecedor a ter a nota atualizada
+        
+    Returns:
+        JSON com mensagem de sucesso e dados atualizados (200) ou erro (400/403/404/500)
+    """
     if request.method == 'OPTIONS':
         return '', 204
     if not _admin_usuario_autorizado():
@@ -1571,6 +2086,19 @@ def atualizar_nota_fornecedor(fornecedor_id):
 @app.route('/api/admin/fornecedores/<int:fornecedor_id>/decis\u00e3o', methods=['POST', 'OPTIONS'])
 @jwt_required(optional=True)
 def registrar_decisao_fornecedor(fornecedor_id):
+    """
+    Endpoint para registrar decisão final sobre homologação de um fornecedor.
+    
+    Permite que administradores registrem a decisão final (APROVADO, REPROVADO, EM_ANALISE),
+    adicionem observações e uma nota de referência. Opcionalmente pode enviar e-mail
+    ao fornecedor notificando sobre a decisão. Requer autenticação de admin.
+    
+    Args:
+        fornecedor_id: ID do fornecedor sobre o qual registrar a decisão
+        
+    Returns:
+        JSON com mensagem de sucesso e dados atualizados (200) ou erro (400/403/404/500)
+    """
     if request.method == 'OPTIONS':
         return '', 204
     if not _admin_usuario_autorizado():
@@ -1639,6 +2167,18 @@ def registrar_decisao_fornecedor(fornecedor_id):
 @app.route('/api/admin/fornecedores/<int:fornecedor_id>', methods=['DELETE'])
 @jwt_required()
 def excluir_fornecedor(fornecedor_id):
+    """
+    Endpoint para excluir um fornecedor do sistema.
+    
+    Remove o fornecedor do banco de dados e também exclui a pasta de arquivos
+    associada no sistema de arquivos. Requer autenticação de admin.
+    
+    Args:
+        fornecedor_id: ID do fornecedor a ser excluído
+        
+    Returns:
+        JSON com mensagem de sucesso (200) ou erro (403/404/500)
+    """
     if not _admin_usuario_autorizado():
         return jsonify(message='Acesso nao autorizado.'), 403
 
@@ -1667,6 +2207,20 @@ def excluir_fornecedor(fornecedor_id):
 @app.route('/api/admin/documentos/<int:documento_id>/download', methods=['GET', 'OPTIONS'])
 @jwt_required(optional=True)
 def baixar_documento_admin(documento_id):
+    """
+    Endpoint para download de documentos pela área administrativa.
+    
+    Permite que administradores baixem documentos enviados por fornecedores.
+    Primeiro tenta buscar o arquivo no disco, se não encontrar, busca no banco
+    de dados (dados_arquivo) e tenta recuperar de fontes alternativas.
+    Requer autenticação de admin.
+    
+    Args:
+        documento_id: ID do documento a ser baixado
+        
+    Returns:
+        Arquivo para download (200) ou erro (403/404/500)
+    """
     if request.method == 'OPTIONS':
         return '', 204
     if not _admin_usuario_autorizado():
@@ -1728,6 +2282,19 @@ def baixar_documento_admin(documento_id):
 @app.route('/api/admin/notificacoes', methods=['GET'])
 @jwt_required()
 def painel_admin_notificacoes():
+    """
+    Endpoint que retorna notificações recentes para o painel administrativo.
+    
+    Compila eventos recentes do sistema: novos cadastros de fornecedores e
+    envios de documentos. Ordena por data e retorna os mais recentes.
+    Requer autenticação de admin.
+    
+    Query Params:
+        limit: Número máximo de notificações a retornar (padrão: 20)
+        
+    Returns:
+        JSON com lista de eventos/notificações (200) ou erro (403/500)
+    """
     if not _admin_usuario_autorizado():
         return jsonify(message='Acesso não autorizado.'), 403
     try:
@@ -1775,6 +2342,18 @@ def painel_admin_notificacoes():
 
 @app.route('/api/fornecedores', methods=['GET'])
 def listar_fornecedores():
+    """
+    Endpoint público para listar fornecedores (com busca opcional).
+    
+    Retorna uma lista simplificada de fornecedores cadastrados, com opção de
+    filtrar por nome. Endpoint público, não requer autenticação.
+    
+    Query Params:
+        nome: Nome opcional para filtrar fornecedores
+        
+    Returns:
+        JSON com lista de fornecedores (id, nome, email, cnpj)
+    """
     nome = request.args.get('nome', '')
     print(f"Buscando fornecedores com nome: {nome}")
     if nome:
@@ -1785,6 +2364,24 @@ def listar_fornecedores():
     lista = [{"id": f.id, "nome": f.nome, "email": f.email, "cnpj": f.cnpj} for f in fornecedores]
     return jsonify(lista)
 def enviar_email_documento(fornecedor_nome, documento_nome, categoria, destinatario, link_documento, arquivos_paths=None):
+    """
+    Envia e-mail notificando sobre novos documentos enviados por um fornecedor.
+    
+    Cria e envia um e-mail HTML formatado para notificar a equipe administrativa
+    quando um fornecedor envia documentos. O e-mail inclui informações sobre
+    o fornecedor, nome do documento, categoria e pode anexar os arquivos.
+    
+    Args:
+        fornecedor_nome: Nome do fornecedor que enviou o documento
+        documento_nome: Nome do(s) documento(s) enviado(s)
+        categoria: Categoria do documento
+        destinatario: E-mail do destinatário
+        link_documento: Link(s) para acesso ao(s) documento(s)
+        arquivos_paths: Lista opcional de caminhos dos arquivos para anexar
+        
+    Returns:
+        None (imprime erro em caso de falha)
+    """
     corpo = f"""
     <!DOCTYPE html>
     <html lang="pt-BR">
@@ -2074,6 +2671,20 @@ def enviar_email_documento(fornecedor_nome, documento_nome, categoria, destinata
 
 
 def _enviar_email_decisao(fornecedor, status_informado, observacao):
+    """
+    Envia e-mail ao fornecedor informando sobre a decisão de homologação.
+    
+    Envia um e-mail HTML formatado ao fornecedor notificando se foi aprovado
+    ou reprovado no processo de homologação, incluindo observações do administrador.
+    
+    Args:
+        fornecedor: Objeto Fornecedor do banco de dados
+        status_informado: Status da decisão ('APROVADO' ou 'REPROVADO')
+        observacao: Observações do administrador sobre a decisão
+        
+    Returns:
+        True se o e-mail foi enviado com sucesso, False caso contrário
+    """
     try:
         assunto = (
             "Portal Engeman - Homologacao aprovada"
@@ -2125,6 +2736,22 @@ def _enviar_email_decisao(fornecedor, status_informado, observacao):
         print(f'Erro ao enviar e-mail de decisao: {exc}')
         return False
 def enviar_email(destinatario, assunto, corpo, imagem_path=None):
+    """
+    Função genérica para envio de e-mails HTML com logo embutido.
+    
+    Envia um e-mail HTML usando Flask-Mail, incorporando o logo da empresa
+    como imagem base64 diretamente no HTML (substituindo o placeholder cid:engeman_logo).
+    Se o logo não for encontrado, envia o e-mail sem imagem.
+    
+    Args:
+        destinatario: Endereço de e-mail do destinatário
+        assunto: Assunto do e-mail
+        corpo: Corpo do e-mail em HTML
+        imagem_path: Caminho opcional para o logo (usa padrão se None)
+        
+    Raises:
+        Exception: Se houver erro ao enviar o e-mail
+    """
     try:
         msg = Message(
             assunto,
@@ -2146,6 +2773,15 @@ def enviar_email(destinatario, assunto, corpo, imagem_path=None):
         print(f"Erro ao enviar e-mail: {e}")
         raise e
 def gerar_token_recuperacao():
+    """
+    Gera um token numérico de 6 dígitos para recuperação de senha.
+    
+    Gera um número aleatório entre 100000 e 999999 para ser usado como
+    token de recuperação de senha, enviado por e-mail ao usuário.
+    
+    Returns:
+        Inteiro de 6 dígitos representando o token
+    """
     return random.randint(100000, 999999)
 if __name__ == '__main__':
     app.run(debug=True)
